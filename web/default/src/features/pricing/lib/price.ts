@@ -1,6 +1,11 @@
 import { formatCurrencyFromUSD } from '@/lib/currency'
 import { QUOTA_TYPE_VALUES, TOKEN_UNIT_DIVISORS } from '../constants'
-import type { PricingModel, TokenUnit, PriceType } from '../types'
+import type {
+  ModelGroupPricingOverride,
+  PricingModel,
+  TokenUnit,
+  PriceType,
+} from '../types'
 
 // ----------------------------------------------------------------------------
 // Price Calculation Utilities
@@ -34,25 +39,108 @@ export function stripTrailingZeros(formatted: string): string {
   return `${symbol}${result}${suffix}`
 }
 
-/**
- * Find minimum group ratio from enabled groups
- */
-function getMinGroupRatio(
+export function getEffectiveGroupRatio(
+  model: PricingModel | undefined,
+  group: string,
+  groupRatio: Record<string, number>
+): number {
+  const modelPricing = model?.group_pricing?.[group]
+  if (typeof modelPricing === 'number' && Number.isFinite(modelPricing)) {
+    return modelPricing
+  }
+  if (
+    modelPricing &&
+    typeof modelPricing === 'object' &&
+    modelPricing.ratio !== undefined &&
+    modelPricing.ratio !== null &&
+    Number.isFinite(Number(modelPricing.ratio))
+  ) {
+    return Number(modelPricing.ratio)
+  }
+  const globalRatio = groupRatio[group]
+  if (globalRatio !== undefined && Number.isFinite(Number(globalRatio))) {
+    return Number(globalRatio)
+  }
+  return 1
+}
+
+function getModelGroupPricingOverride(
+  model: PricingModel,
+  group: string
+): ModelGroupPricingOverride | undefined {
+  const pricing = model.group_pricing?.[group]
+  if (!pricing || typeof pricing !== 'object') {
+    return undefined
+  }
+  return pricing
+}
+
+function getPriceOverride(
+  model: PricingModel,
+  group: string | undefined,
+  type: PriceType
+): number | undefined {
+  if (!group) return undefined
+  const override = getModelGroupPricingOverride(model, group)
+  if (!override) return undefined
+  const keyByType: Record<PriceType, keyof ModelGroupPricingOverride> = {
+    input: 'prompt_price',
+    output: 'completion_price',
+    cache: 'cache_price',
+    create_cache: 'create_cache_price',
+    image: 'image_price',
+    audio_input: 'audio_price',
+    audio_output: 'audio_completion_price',
+  }
+  const value = override[keyByType[type]]
+  return value !== undefined && value !== null && Number.isFinite(Number(value))
+    ? Number(value)
+    : undefined
+}
+
+function calculateMinGroupTokenPrice(
+  model: PricingModel,
+  type: PriceType,
   enableGroups: string[],
   groupRatio: Record<string, number>
 ): number {
-  if (enableGroups.length === 0) return 1
-
-  let minRatio = Number.POSITIVE_INFINITY
-
+  if (enableGroups.length === 0) {
+    return calculateTokenPrice(model, type, 1)
+  }
+  let minPrice = Number.POSITIVE_INFINITY
   for (const group of enableGroups) {
-    const ratio = groupRatio[group]
-    if (ratio !== undefined && ratio < minRatio) {
-      minRatio = ratio
+    const ratio = getEffectiveGroupRatio(model, group, groupRatio)
+    const price = calculateTokenPrice(model, type, ratio, group)
+    if (Number.isFinite(price) && price < minPrice) {
+      minPrice = price
     }
   }
+  return minPrice === Number.POSITIVE_INFINITY ? NaN : minPrice
+}
 
-  return minRatio === Number.POSITIVE_INFINITY ? 1 : minRatio
+function calculateMinGroupRequestPrice(
+  model: PricingModel,
+  enableGroups: string[],
+  groupRatio: Record<string, number>
+): number {
+  if (enableGroups.length === 0) {
+    return model.model_price || 0
+  }
+  let minPrice = Number.POSITIVE_INFINITY
+  for (const group of enableGroups) {
+    const ratio = getEffectiveGroupRatio(model, group, groupRatio)
+    const override = getModelGroupPricingOverride(model, group)
+    const price =
+      override?.model_price !== undefined &&
+      override.model_price !== null &&
+      Number.isFinite(Number(override.model_price))
+        ? Number(override.model_price)
+        : (model.model_price || 0) * ratio
+    if (Number.isFinite(price) && price < minPrice) {
+      minPrice = price
+    }
+  }
+  return minPrice === Number.POSITIVE_INFINITY ? model.model_price || 0 : minPrice
 }
 
 /**
@@ -64,8 +152,14 @@ function getMinGroupRatio(
 function calculateTokenPrice(
   model: PricingModel,
   type: PriceType,
-  ratio: number
+  ratio: number,
+  group?: string
 ): number {
+  const override = getPriceOverride(model, group, type)
+  if (override !== undefined) {
+    return override
+  }
+
   const base = model.model_ratio * 2 * ratio
 
   switch (type) {
@@ -74,24 +168,17 @@ function calculateTokenPrice(
     case 'output':
       return base * model.completion_ratio
     case 'cache':
-      return hasRatio(model.cache_ratio)
-        ? base * Number(model.cache_ratio)
-        : NaN
+      return hasRatio(model.cache_ratio) ? base * Number(model.cache_ratio) : NaN
     case 'create_cache':
       return hasRatio(model.create_cache_ratio)
         ? base * Number(model.create_cache_ratio)
         : NaN
     case 'image':
-      return hasRatio(model.image_ratio)
-        ? base * Number(model.image_ratio)
-        : NaN
+      return hasRatio(model.image_ratio) ? base * Number(model.image_ratio) : NaN
     case 'audio_input':
-      return hasRatio(model.audio_ratio)
-        ? base * Number(model.audio_ratio)
-        : NaN
+      return hasRatio(model.audio_ratio) ? base * Number(model.audio_ratio) : NaN
     case 'audio_output':
-      return hasRatio(model.audio_ratio) &&
-        hasRatio(model.audio_completion_ratio)
+      return hasRatio(model.audio_ratio) && hasRatio(model.audio_completion_ratio)
         ? base *
             Number(model.audio_ratio) *
             Number(model.audio_completion_ratio)
@@ -158,9 +245,15 @@ export function formatPrice(
     ? model.enable_groups
     : []
   const groupRatio = model.group_ratio || {}
-  const minRatio = getMinGroupRatio(enableGroups, groupRatio)
-
-  let priceInUSD = calculateTokenPrice(model, type, minRatio)
+  let priceInUSD = calculateMinGroupTokenPrice(
+    model,
+    type,
+    enableGroups,
+    groupRatio
+  )
+  if (!Number.isFinite(priceInUSD)) {
+    return '-'
+  }
   priceInUSD = applyRechargeRate(
     priceInUSD,
     showWithRecharge,
@@ -193,8 +286,11 @@ export function formatGroupPrice(
     return '-'
   }
 
-  const ratio = groupRatio[group] || 1
-  let priceInUSD = calculateTokenPrice(model, type, ratio)
+  const ratio = getEffectiveGroupRatio(model, group, groupRatio)
+  let priceInUSD = calculateTokenPrice(model, type, ratio, group)
+  if (!Number.isFinite(priceInUSD)) {
+    return '-'
+  }
 
   priceInUSD = applyRechargeRate(
     priceInUSD,
@@ -226,8 +322,14 @@ export function formatFixedPrice(
     return '-'
   }
 
-  const ratio = groupRatio[group] || 1
-  let priceInUSD = (model.model_price || 0) * ratio
+  const ratio = getEffectiveGroupRatio(model, group, groupRatio)
+  const groupOverride = getModelGroupPricingOverride(model, group)
+  let priceInUSD =
+    groupOverride?.model_price !== undefined &&
+    groupOverride.model_price !== null &&
+    Number.isFinite(Number(groupOverride.model_price))
+      ? Number(groupOverride.model_price)
+      : (model.model_price || 0) * ratio
 
   priceInUSD = applyRechargeRate(
     priceInUSD,
@@ -260,9 +362,11 @@ export function formatRequestPrice(
     ? model.enable_groups
     : []
   const groupRatio = model.group_ratio || {}
-  const minRatio = getMinGroupRatio(enableGroups, groupRatio)
-
-  let priceInUSD = (model.model_price || 0) * minRatio
+  let priceInUSD = calculateMinGroupRequestPrice(
+    model,
+    enableGroups,
+    groupRatio
+  )
 
   priceInUSD = applyRechargeRate(
     priceInUSD,

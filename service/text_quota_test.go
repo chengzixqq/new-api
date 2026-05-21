@@ -15,6 +15,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func testFloat64Ptr(value float64) *float64 {
+	return &value
+}
+
 func TestCalculateTextQuotaSummaryUnifiedForClaudeSemantic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -316,6 +320,84 @@ func TestCalculateTextQuotaSummaryKeepsPrePRClaudeOpenRouterBilling(t *testing.T
 	require.True(t, summary.IsClaudeUsageSemantic)
 	require.Equal(t, 172, summary.PromptTokens)
 	require.Equal(t, 798, summary.Quota)
+}
+
+func TestCalculateTextQuotaSummaryUsesModelGroupPriceOverrides(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	override := &types.ModelGroupPricing{
+		PromptPrice:     testFloat64Ptr(0.1),
+		CompletionPrice: testFloat64Ptr(0.6),
+		CachePrice:      testFloat64Ptr(0.1),
+	}
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-5.5",
+		PriceData: types.PriceData{
+			ModelRatio:      99,
+			CompletionRatio: 99,
+			CacheRatio:      99,
+			GroupRatioInfo: types.GroupRatioInfo{
+				GroupRatio:           99,
+				ModelGroupPricing:    override,
+				HasModelGroupPricing: true,
+			},
+			GroupPriceOverride: override,
+		},
+		StartTime: time.Now(),
+	}
+
+	usage := &dto.Usage{
+		PromptTokens:     1_000_000,
+		CompletionTokens: 500_000,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 200_000,
+		},
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+	// Direct group prices are USD / 1M tokens and override the global ratios:
+	// normal input: 800k * $0.1 = $0.08
+	// cache read:   200k * $0.1 = $0.02
+	// output:       500k * $0.6 = $0.30
+	// total $0.40 * 500000 quota/unit = 200000
+	require.Equal(t, 200000, summary.Quota)
+}
+
+func TestCalculateTextQuotaSummaryUsesModelGroupPerRequestPriceOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	override := &types.ModelGroupPricing{
+		ModelPrice: testFloat64Ptr(0.25),
+	}
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-image-2",
+		PriceData: types.PriceData{
+			UsePrice:   true,
+			ModelPrice: 99,
+			GroupRatioInfo: types.GroupRatioInfo{
+				GroupRatio:           99,
+				ModelGroupPricing:    override,
+				HasModelGroupPricing: true,
+			},
+			GroupPriceOverride: override,
+		},
+		StartTime: time.Now(),
+	}
+
+	usage := &dto.Usage{
+		PromptTokens: 1,
+		TotalTokens:  1,
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+	require.Equal(t, 125000, summary.Quota)
+	require.Equal(t, 0.25, summary.ModelPrice)
 }
 
 func TestComposeTieredTextQuotaKeepsToolCallSurcharges(t *testing.T) {

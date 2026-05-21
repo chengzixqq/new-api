@@ -61,7 +61,55 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.
 		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 	}
 
+	if modelGroupRatio, ok := model.GetModelGroupRatio(relayInfo.OriginModelName, relayInfo.UsingGroup); ok {
+		groupRatioInfo.ModelGroupRatio = modelGroupRatio
+		groupRatioInfo.GroupRatio = modelGroupRatio
+		groupRatioInfo.HasModelGroupRatio = true
+	}
+	if modelGroupPricing, ok := model.GetModelGroupPriceOverrides(relayInfo.OriginModelName, relayInfo.UsingGroup); ok {
+		groupRatioInfo.ModelGroupPricing = &modelGroupPricing
+		groupRatioInfo.HasModelGroupPricing = true
+	}
+
 	return groupRatioInfo
+}
+
+func priceToQuotaPerToken(price float64) float64 {
+	return price / 1_000_000 * common.QuotaPerUnit
+}
+
+func applyTokenPriceOverrides(priceData *types.PriceData, promptTokens int) {
+	if priceData == nil || priceData.GroupPriceOverride == nil || priceData.UsePrice {
+		return
+	}
+	override := priceData.GroupPriceOverride
+	if override.PromptPrice == nil {
+		return
+	}
+	preConsumedTokens := float64(promptTokens)
+	if preConsumedTokens <= 0 {
+		return
+	}
+	priceData.QuotaToPreConsume = int(preConsumedTokens * priceToQuotaPerToken(*override.PromptPrice))
+	if priceData.QuotaToPreConsume == 0 && *override.PromptPrice > 0 {
+		priceData.QuotaToPreConsume = 1
+	}
+}
+
+func applyPerCallPriceOverrides(priceData *types.PriceData) {
+	if priceData == nil || priceData.GroupPriceOverride == nil || !priceData.UsePrice {
+		return
+	}
+	if priceData.GroupPriceOverride.ModelPrice == nil {
+		return
+	}
+	priceData.ModelPrice = *priceData.GroupPriceOverride.ModelPrice
+	priceData.Quota = int(priceData.ModelPrice * common.QuotaPerUnit)
+	priceData.QuotaToPreConsume = priceData.Quota
+	if priceData.Quota == 0 && priceData.ModelPrice > 0 {
+		priceData.Quota = 1
+		priceData.QuotaToPreConsume = 1
+	}
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (types.PriceData, error) {
@@ -85,11 +133,11 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	var audioRatio float64
 	var audioCompletionRatio float64
 	var freeModel bool
+	preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
+	if meta.MaxTokens != 0 {
+		preConsumedTokens += meta.MaxTokens
+	}
 	if !usePrice {
-		preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
-		if meta.MaxTokens != 0 {
-			preConsumedTokens += meta.MaxTokens
-		}
 		var success bool
 		var matchName string
 		modelRatio, success, matchName = ratio_setting.GetModelRatio(info.OriginModelName)
@@ -154,7 +202,10 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		CacheCreation5mRatio: cacheCreationRatio5m,
 		CacheCreation1hRatio: cacheCreationRatio1h,
 		QuotaToPreConsume:    preConsumedQuota,
+		GroupPriceOverride:   groupRatioInfo.ModelGroupPricing,
 	}
+	applyTokenPriceOverrides(&priceData, preConsumedTokens)
+	applyPerCallPriceOverrides(&priceData)
 
 	if common.DebugEnabled {
 		println(fmt.Sprintf("model_price_helper result: %s", priceData.ToSetting()))
@@ -219,8 +270,10 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (types
 		ModelRatio:     modelRatio,
 		UsePrice:       usePrice,
 		Quota:          quota,
-		GroupRatioInfo: groupRatioInfo,
+		GroupRatioInfo:     groupRatioInfo,
+		GroupPriceOverride: groupRatioInfo.ModelGroupPricing,
 	}
+	applyPerCallPriceOverrides(&priceData)
 	return priceData, nil
 }
 

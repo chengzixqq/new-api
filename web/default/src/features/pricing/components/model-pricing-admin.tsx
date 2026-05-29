@@ -201,6 +201,51 @@ function draftToGroupPricingItem(
   return item as ModelGroupPricingOverride
 }
 
+type GroupFieldDef = {
+  key: keyof GroupPricingDraft
+  label: string
+  placeholder?: string
+}
+
+function effectiveGroupMode(
+  draft: GroupPricingDraft,
+  model: PricingModel
+): string {
+  if (draft.billing_mode) {
+    return draft.billing_mode
+  }
+  if (model.billing_mode === 'tiered_expr') {
+    return 'tiered_expr'
+  }
+  return isTokenBasedModel(model) ? 'per-token' : 'per-request'
+}
+
+function fieldsForGroupMode(mode: string): GroupFieldDef[] {
+  if (mode === 'per-request') {
+    return [{ key: 'model_price', label: 'Model price' }]
+  }
+  if (mode === 'tiered_expr') {
+    return []
+  }
+  return [
+    { key: 'ratio', label: 'Ratio', placeholder: 'x' },
+    { key: 'prompt_price', label: 'Input price' },
+    { key: 'completion_price', label: 'Output price' },
+    { key: 'cache_price', label: 'Cache price' },
+    { key: 'create_cache_price', label: 'Cache Write' },
+    { key: 'image_price', label: 'Image price' },
+    { key: 'audio_price', label: 'Audio input' },
+    { key: 'audio_completion_price', label: 'Audio output' },
+  ]
+}
+
+const GROUP_MODE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '', label: 'Inherit model default' },
+  { value: 'per-token', label: 'Per-token billing' },
+  { value: 'per-request', label: 'Per-request billing' },
+  { value: 'tiered_expr', label: 'Expression billing' },
+]
+
 function pricingDataToPayload(data: ModelRatioData): UpdateModelPricingPayload {
   if (data.billingMode === 'tiered_expr') {
     return {
@@ -340,26 +385,6 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
     }))
   }
 
-  const groupPriceFields: Array<{
-    key: keyof GroupPricingDraft
-    label: string
-    placeholder?: string
-  }> = isTokenBasedModel(props.model)
-    ? [
-        { key: 'ratio', label: 'Ratio', placeholder: 'x' },
-        { key: 'prompt_price', label: 'Input price' },
-        { key: 'completion_price', label: 'Output price' },
-        { key: 'cache_price', label: 'Cache price' },
-        { key: 'create_cache_price', label: 'Cache Write' },
-        { key: 'image_price', label: 'Image price' },
-        { key: 'audio_price', label: 'Audio input' },
-        { key: 'audio_completion_price', label: 'Audio output' },
-      ]
-    : [
-        { key: 'ratio', label: 'Ratio', placeholder: 'x' },
-        { key: 'model_price', label: 'Model price' },
-      ]
-
   return (
     <section className='rounded-lg border bg-muted/10'>
       <div className='flex items-center justify-between gap-3 border-b px-3 py-2'>
@@ -424,27 +449,80 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
                         {t('Current')} {effective}x
                       </div>
                     </div>
-                    <div className='grid gap-2 sm:grid-cols-2'>
-                      {groupPriceFields.map((field) => (
-                        <label key={field.key} className='space-y-1'>
-                          <span className='text-muted-foreground text-xs'>
-                            {t(field.label)}
-                          </span>
-                          <Input
-                            value={draft[field.key] ?? ''}
-                            placeholder={field.placeholder || '$/1M tokens'}
-                            inputMode='decimal'
-                            onChange={(event) =>
-                              updateGroupDraft(
-                                group,
-                                field.key,
-                                event.target.value
-                              )
-                            }
-                          />
-                        </label>
-                      ))}
-                    </div>
+                    {(() => {
+                      const mode = effectiveGroupMode(draft, props.model)
+                      const fields = fieldsForGroupMode(mode)
+                      return (
+                        <div className='space-y-2'>
+                          <label className='block space-y-1'>
+                            <span className='text-muted-foreground text-xs'>
+                              {t('Group billing mode')}
+                            </span>
+                            <select
+                              className='border-input bg-background h-9 w-full rounded-md border px-2 text-sm'
+                              value={draft.billing_mode}
+                              onChange={(event) =>
+                                updateGroupDraft(
+                                  group,
+                                  'billing_mode',
+                                  event.target.value
+                                )
+                              }
+                            >
+                              {GROUP_MODE_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {t(opt.label)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          {mode === 'tiered_expr' ? (
+                            <label className='block space-y-1'>
+                              <span className='text-muted-foreground text-xs'>
+                                {t('Billing expression')}
+                              </span>
+                              <textarea
+                                className='border-input bg-background min-h-[72px] w-full rounded-md border p-2 font-mono text-xs'
+                                value={draft.billing_expr}
+                                placeholder={'tier("base", p * 2 + c * 8)'}
+                                onChange={(event) =>
+                                  updateGroupDraft(
+                                    group,
+                                    'billing_expr',
+                                    event.target.value
+                                  )
+                                }
+                              />
+                            </label>
+                          ) : (
+                            <div className='grid gap-2 sm:grid-cols-2'>
+                              {fields.map((field) => (
+                                <label key={field.key} className='space-y-1'>
+                                  <span className='text-muted-foreground text-xs'>
+                                    {t(field.label)}
+                                  </span>
+                                  <Input
+                                    value={draft[field.key] ?? ''}
+                                    placeholder={
+                                      field.placeholder || '$/1M tokens'
+                                    }
+                                    inputMode='decimal'
+                                    onChange={(event) =>
+                                      updateGroupDraft(
+                                        group,
+                                        field.key,
+                                        event.target.value
+                                      )
+                                    }
+                                  />
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
                 )
               })}

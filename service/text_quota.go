@@ -57,6 +57,70 @@ type textQuotaSummary struct {
 	ToolCallSurchargeQuota   decimal.Decimal
 }
 
+func priceOverrideToQuota(price *float64, tokens decimal.Decimal) (decimal.Decimal, bool) {
+	if price == nil {
+		return decimal.Zero, false
+	}
+	return decimal.NewFromFloat(*price).
+		Div(decimal.NewFromInt(1_000_000)).
+		Mul(tokens).
+		Mul(decimal.NewFromFloat(common.QuotaPerUnit)), true
+}
+
+func applyTextGroupPriceOverride(relayInfo *relaycommon.RelayInfo, summary *textQuotaSummary, components map[string]decimal.Decimal) (decimal.Decimal, bool) {
+	if relayInfo == nil || summary == nil || relayInfo.PriceData.GroupPriceOverride == nil {
+		return decimal.Zero, false
+	}
+	override := relayInfo.PriceData.GroupPriceOverride
+	quota := decimal.Zero
+	applied := false
+
+	if value, ok := priceOverrideToQuota(override.PromptPrice, components["prompt"]); ok {
+		quota = quota.Add(value)
+		applied = true
+	} else {
+		quota = quota.Add(components["prompt"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
+	}
+	if value, ok := priceOverrideToQuota(override.CompletionPrice, components["completion"]); ok {
+		quota = quota.Add(value)
+		applied = true
+	} else {
+		quota = quota.Add(components["completion"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.CompletionRatio)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
+	}
+	if value, ok := priceOverrideToQuota(override.CachePrice, components["cache"]); ok {
+		quota = quota.Add(value)
+		applied = true
+	} else {
+		quota = quota.Add(components["cache"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.CacheRatio)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
+	}
+	if value, ok := priceOverrideToQuota(override.CreateCachePrice, components["cache_create"]); ok {
+		quota = quota.Add(value)
+		applied = true
+	} else {
+		quota = quota.Add(components["cache_create"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.CacheCreationRatio)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
+	}
+	if value, ok := priceOverrideToQuota(override.CreateCachePrice, components["cache_create_5m"]); ok {
+		quota = quota.Add(value)
+		applied = true
+	} else {
+		quota = quota.Add(components["cache_create_5m"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.CacheCreationRatio5m)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
+	}
+	if value, ok := priceOverrideToQuota(override.CreateCachePrice, components["cache_create_1h"]); ok {
+		quota = quota.Add(value)
+		applied = true
+	} else {
+		quota = quota.Add(components["cache_create_1h"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.CacheCreationRatio1h)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
+	}
+	if value, ok := priceOverrideToQuota(override.ImagePrice, components["image"]); ok {
+		quota = quota.Add(value)
+		applied = true
+	} else {
+		quota = quota.Add(components["image"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.ImageRatio)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
+	}
+
+	return quota, applied
+}
+
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
 	if summary.CacheCreationTokens5m > 0 || summary.CacheCreationTokens1h > 0 {
 		splitCacheWriteTokens := summary.CacheCreationTokens5m + summary.CacheCreationTokens1h
@@ -263,18 +327,48 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			imageTokensWithRatio = dImageTokens.Mul(dImageRatio)
 		}
 
+		cacheCreateOverrideTokens := dCachedCreationTokens
+		if summary.IsClaudeUsageSemantic || legacyClaudeDerived {
+			remaining := summary.CacheCreationTokens - summary.CacheCreationTokens5m - summary.CacheCreationTokens1h
+			if remaining < 0 {
+				remaining = 0
+			}
+			cacheCreateOverrideTokens = decimal.NewFromInt(int64(remaining))
+		}
+
 		if !dAudioTokens.IsZero() {
-			summary.AudioInputPrice = operation_setting.GetGeminiInputAudioPricePerMillionTokens(summary.ModelName)
-			if summary.AudioInputPrice > 0 {
+			if override := relayInfo.PriceData.GroupPriceOverride; override != nil && override.AudioPrice != nil {
+				summary.AudioInputPrice = *override.AudioPrice
 				baseTokens = baseTokens.Sub(dAudioTokens)
-				audioInputQuota = decimal.NewFromFloat(summary.AudioInputPrice).
-					Div(decimal.NewFromInt(1000000)).Mul(dAudioTokens).Mul(dGroupRatio).Mul(dQuotaPerUnit)
+				if value, ok := priceOverrideToQuota(override.AudioPrice, dAudioTokens); ok {
+					audioInputQuota = value
+				}
+			} else {
+				summary.AudioInputPrice = operation_setting.GetGeminiInputAudioPricePerMillionTokens(summary.ModelName)
+				if summary.AudioInputPrice > 0 {
+					baseTokens = baseTokens.Sub(dAudioTokens)
+					audioInputQuota = decimal.NewFromFloat(summary.AudioInputPrice).
+						Div(decimal.NewFromInt(1000000)).Mul(dAudioTokens).Mul(dGroupRatio).Mul(dQuotaPerUnit)
+				}
 			}
 		}
 
-		promptQuota := baseTokens.Add(cachedTokensWithRatio).Add(imageTokensWithRatio).Add(cachedCreationTokensWithRatio)
-		completionQuota := dCompletionTokens.Mul(dCompletionRatio)
-		quotaCalculateDecimal := promptQuota.Add(completionQuota).Mul(ratio)
+		quotaCalculateDecimal := decimal.Zero
+		if overrideQuota, ok := applyTextGroupPriceOverride(relayInfo, &summary, map[string]decimal.Decimal{
+			"prompt":          baseTokens,
+			"completion":      dCompletionTokens,
+			"cache":           dCacheTokens,
+			"cache_create":    cacheCreateOverrideTokens,
+			"cache_create_5m": decimal.NewFromInt(int64(summary.CacheCreationTokens5m)),
+			"cache_create_1h": decimal.NewFromInt(int64(summary.CacheCreationTokens1h)),
+			"image":           dImageTokens,
+		}); ok {
+			quotaCalculateDecimal = overrideQuota
+		} else {
+			promptQuota := baseTokens.Add(cachedTokensWithRatio).Add(imageTokensWithRatio).Add(cachedCreationTokensWithRatio)
+			completionQuota := dCompletionTokens.Mul(dCompletionRatio)
+			quotaCalculateDecimal = promptQuota.Add(completionQuota).Mul(ratio)
+		}
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(summary.ToolCallSurchargeQuota)
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(audioInputQuota)
 
@@ -284,12 +378,16 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			}
 		}
 
-		if !ratio.IsZero() && quotaCalculateDecimal.LessThanOrEqual(decimal.Zero) {
+		if (!ratio.IsZero() || (relayInfo.PriceData.GroupPriceOverride != nil && relayInfo.PriceData.GroupPriceOverride.HasPriceOverride())) && quotaCalculateDecimal.LessThanOrEqual(decimal.Zero) {
 			quotaCalculateDecimal = decimal.NewFromInt(1)
 		}
 		summary.Quota = int(quotaCalculateDecimal.Round(0).IntPart())
 	} else {
 		quotaCalculateDecimal := dModelPrice.Mul(dQuotaPerUnit).Mul(dGroupRatio)
+		if override := relayInfo.PriceData.GroupPriceOverride; override != nil && override.ModelPrice != nil {
+			quotaCalculateDecimal = decimal.NewFromFloat(*override.ModelPrice).Mul(dQuotaPerUnit)
+			summary.ModelPrice = *override.ModelPrice
+		}
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(summary.ToolCallSurchargeQuota)
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(audioInputQuota)
 		if len(relayInfo.PriceData.OtherRatios) > 0 {
@@ -302,7 +400,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 
 	if summary.TotalTokens == 0 {
 		summary.Quota = 0
-	} else if !ratio.IsZero() && summary.Quota == 0 {
+	} else if (!ratio.IsZero() || (relayInfo.PriceData.GroupPriceOverride != nil && relayInfo.PriceData.GroupPriceOverride.HasPriceOverride())) && summary.Quota == 0 {
 		summary.Quota = 1
 	}
 

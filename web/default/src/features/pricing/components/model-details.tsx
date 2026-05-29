@@ -21,7 +21,9 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft, Code2, HeartPulse, Info, Timer } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { useAuthStore } from '@/stores/auth-store'
 import { getLobeIcon } from '@/lib/lobe-icon'
+import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -62,7 +64,11 @@ import {
 import { parseTags } from '../lib/filters'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
 import { inferModelMetadata } from '../lib/model-metadata'
-import { formatFixedPrice, formatGroupPrice } from '../lib/price'
+import {
+  formatFixedPrice,
+  formatGroupPrice,
+  getEffectiveGroupRatio,
+} from '../lib/price'
 import type {
   Modality,
   ModelCapability,
@@ -73,6 +79,7 @@ import type {
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelDetailsApi, ModelDetailsProviderInfo } from './model-details-api'
 import { ModalityIcons } from './model-details-modalities'
+import { ModelPricingAdminPanel } from './model-pricing-admin'
 import { ModelDetailsPerformance } from './model-details-performance'
 import { ModelDetailsQuickStats } from './model-details-quick-stats'
 
@@ -610,19 +617,41 @@ function GroupPricingSection(props: {
   const isTokenBased = isTokenBasedModel(props.model)
   const tokenUnitLabel = props.tokenUnit === 'K' ? '1K' : '1M'
 
+  const hasOverridePrice = (type: PriceType) => {
+    const keyByType: Record<PriceType, string> = {
+      input: 'prompt_price',
+      output: 'completion_price',
+      cache: 'cache_price',
+      create_cache: 'create_cache_price',
+      image: 'image_price',
+      audio_input: 'audio_price',
+      audio_output: 'audio_completion_price',
+    }
+    const key = keyByType[type]
+    return Object.values(props.model.group_pricing || {}).some((item) => {
+      if (!item || typeof item !== 'object') return false
+      const value = item[key as keyof typeof item]
+      return value !== undefined && value !== null && Number.isFinite(Number(value))
+    })
+  }
+
   const extraPriceTypes = useMemo(() => {
     const types: { label: string; type: PriceType }[] = []
-    if (props.model.cache_ratio != null)
+    if (props.model.cache_ratio != null || hasOverridePrice('cache'))
       types.push({ label: t('Cache'), type: 'cache' })
-    if (props.model.create_cache_ratio != null)
+    if (
+      props.model.create_cache_ratio != null ||
+      hasOverridePrice('create_cache')
+    )
       types.push({ label: t('Cache Write'), type: 'create_cache' })
-    if (props.model.image_ratio != null)
+    if (props.model.image_ratio != null || hasOverridePrice('image'))
       types.push({ label: t('Image'), type: 'image' })
-    if (props.model.audio_ratio != null)
+    if (props.model.audio_ratio != null || hasOverridePrice('audio_input'))
       types.push({ label: t('Audio In'), type: 'audio_input' })
     if (
-      props.model.audio_ratio != null &&
-      props.model.audio_completion_ratio != null
+      (props.model.audio_ratio != null &&
+        props.model.audio_completion_ratio != null) ||
+      hasOverridePrice('audio_output')
     )
       types.push({ label: t('Audio Out'), type: 'audio_output' })
     return types
@@ -697,7 +726,11 @@ function GroupPricingSection(props: {
         <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
         <div className='space-y-3'>
           {availableGroups.map((group) => {
-            const ratio = props.groupRatio[group] || 1
+            const ratio = getEffectiveGroupRatio(
+              props.model,
+              group,
+              props.groupRatio
+            )
             return (
               <div key={group} className='overflow-hidden rounded-lg border'>
                 <div className='bg-muted/20 flex items-center justify-between gap-3 border-b px-3 py-2'>
@@ -803,7 +836,11 @@ function GroupPricingSection(props: {
           </TableHeader>
           <TableBody>
             {availableGroups.map((group) => {
-              const ratio = props.groupRatio[group] || 1
+              const ratio = getEffectiveGroupRatio(
+                props.model,
+                group,
+                props.groupRatio
+              )
               return (
                 <TableRow key={group}>
                   <TableCell className='py-2.5'>
@@ -905,12 +942,15 @@ export interface ModelDetailsContentProps {
   usdExchangeRate: number
   tokenUnit: TokenUnit
   showRechargePrice?: boolean
+  onPricingUpdated?: () => void
 }
 
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
   const { t } = useTranslation()
+  const user = useAuthStore((state) => state.auth.user)
   const showRechargePrice = props.showRechargePrice ?? false
   const metadata = useMemo(() => inferModelMetadata(props.model), [props.model])
+  const canEditPricing = (user?.role ?? 0) >= ROLE.SUPER_ADMIN
 
   const isDynamic =
     props.model.billing_mode === 'tiered_expr' &&
@@ -962,6 +1002,14 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
               tokenUnit={props.tokenUnit}
               showRechargePrice={showRechargePrice}
             />
+            {canEditPricing && (
+              <ModelPricingAdminPanel
+                model={props.model}
+                groupRatio={props.groupRatio}
+                usableGroup={props.usableGroup}
+                onSaved={props.onPricingUpdated}
+              />
+            )}
           </section>
 
           <ModelDetailsQuickStats metadata={metadata} />

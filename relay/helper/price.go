@@ -246,6 +246,14 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (types.PriceData, error) {
 	groupRatioInfo := HandleGroupRatio(c, info)
 
+	groupMode, groupHasMode := resolveGroupBillingMode(groupRatioInfo)
+	forceGroupPerRequest := groupHasMode && groupMode == types.GroupBillingModePerRequest
+	if groupHasMode && groupMode == types.GroupBillingModeTieredExpr {
+		// tiered_expr has no token context on the task surface; fall back to the
+		// model's own task billing. Documented boundary (see spec section 5.5/8).
+		logger.LogDebug(c, "group %s pins tiered_expr; not supported on task surface, using model task billing", info.UsingGroup)
+	}
+
 	modelPrice, success := ratio_setting.GetModelPrice(info.OriginModelName, true)
 	usePrice := success
 	var modelRatio float64
@@ -300,6 +308,15 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (types
 		Quota:          quota,
 		GroupRatioInfo:     groupRatioInfo,
 		GroupPriceOverride: groupRatioInfo.ModelGroupPricing,
+	}
+	if forceGroupPerRequest && !priceData.UsePrice {
+		// Switch this group to per-call billing; the group's ModelPrice (if any)
+		// is applied by applyPerCallPriceOverrides below. Empty group model_price
+		// -> stays 0 (free), matching the documented fallback chain.
+		priceData.UsePrice = true
+		priceData.ModelPrice = 0
+		priceData.Quota = 0
+		priceData.QuotaToPreConsume = 0
 	}
 	applyPerCallPriceOverrides(&priceData)
 	return priceData, nil

@@ -608,6 +608,79 @@ export const selectFilter = (input, option) => {
 
 // -------------------------------
 // 模型定价计算工具函数
+export const getEffectiveModelGroupRatio = (record, group, groupRatio = {}) => {
+  const modelGroupPricing = record?.group_pricing?.[group];
+  if (
+    modelGroupPricing &&
+    typeof modelGroupPricing === 'object' &&
+    modelGroupPricing.ratio !== undefined &&
+    modelGroupPricing.ratio !== null &&
+    Number.isFinite(Number(modelGroupPricing.ratio))
+  ) {
+    return Number(modelGroupPricing.ratio);
+  }
+  const modelGroupRatio = modelGroupPricing;
+  if (
+    modelGroupRatio !== undefined &&
+    modelGroupRatio !== null &&
+    Number.isFinite(Number(modelGroupRatio))
+  ) {
+    return Number(modelGroupRatio);
+  }
+
+  const globalGroupRatio = groupRatio?.[group];
+  if (
+    globalGroupRatio !== undefined &&
+    globalGroupRatio !== null &&
+    Number.isFinite(Number(globalGroupRatio))
+  ) {
+    return Number(globalGroupRatio);
+  }
+
+  return 1;
+};
+
+const hasExplicitModelGroupRatio = (record, group, groupRatio = {}) => {
+  const modelGroupPricing = record?.group_pricing?.[group];
+  if (
+    modelGroupPricing &&
+    typeof modelGroupPricing === 'object' &&
+    modelGroupPricing.ratio !== undefined &&
+    modelGroupPricing.ratio !== null &&
+    Number.isFinite(Number(modelGroupPricing.ratio))
+  ) {
+    return true;
+  }
+  const modelGroupRatio = modelGroupPricing;
+  if (
+    modelGroupRatio !== undefined &&
+    modelGroupRatio !== null &&
+    Number.isFinite(Number(modelGroupRatio))
+  ) {
+    return true;
+  }
+
+  const globalGroupRatio = groupRatio?.[group];
+  return (
+    globalGroupRatio !== undefined &&
+    globalGroupRatio !== null &&
+    Number.isFinite(Number(globalGroupRatio))
+  );
+};
+
+const getModelGroupPricingOverride = (record, group) => {
+  const pricing = record?.group_pricing?.[group];
+  return pricing && typeof pricing === 'object' ? pricing : null;
+};
+
+const getModelGroupPriceOverride = (record, group, key) => {
+  const override = getModelGroupPricingOverride(record, group);
+  const value = override?.[key];
+  return value !== undefined && value !== null && Number.isFinite(Number(value))
+    ? Number(value)
+    : null;
+};
+
 export const calculateModelPrice = ({
   record,
   selectedGroup,
@@ -620,19 +693,39 @@ export const calculateModelPrice = ({
 }) => {
   // 1. 选择实际使用的分组
   let usedGroup = selectedGroup;
-  let usedGroupRatio = groupRatio[selectedGroup];
+  let usedGroupRatio =
+    selectedGroup === 'all' ||
+    !hasExplicitModelGroupRatio(record, selectedGroup, groupRatio)
+      ? undefined
+      : getEffectiveModelGroupRatio(record, selectedGroup, groupRatio);
 
   if (selectedGroup === 'all' || usedGroupRatio === undefined) {
     // 在模型可用分组中选择倍率最小的分组，若无则使用 1
-    let minRatio = Number.POSITIVE_INFINITY;
+    let minScore = Number.POSITIVE_INFINITY;
     if (
       Array.isArray(record.enable_groups) &&
       record.enable_groups.length > 0
     ) {
       record.enable_groups.forEach((g) => {
-        const r = groupRatio[g];
-        if (r !== undefined && r < minRatio) {
-          minRatio = r;
+        const r = getEffectiveModelGroupRatio(record, g, groupRatio);
+        const promptOverride = getModelGroupPriceOverride(
+          record,
+          g,
+          'prompt_price',
+        );
+        const requestOverride = getModelGroupPriceOverride(
+          record,
+          g,
+          'model_price',
+        );
+        let score = r;
+        if (record.quota_type === 0 && promptOverride !== null) {
+          score = promptOverride;
+        } else if (record.quota_type === 1 && requestOverride !== null) {
+          score = requestOverride;
+        }
+        if (r !== undefined && score < minScore) {
+          minScore = score;
           usedGroup = g;
           usedGroupRatio = r;
         }
@@ -660,6 +753,12 @@ export const calculateModelPrice = ({
     // 按量计费
     const isTokensDisplay = quotaDisplayType === 'TOKENS';
     const inputRatioPriceUSD = record.model_ratio * 2 * usedGroupRatio;
+    const inputAudioFallback =
+      inputRatioPriceUSD * Number(record.audio_ratio || 0);
+    const outputAudioFallback =
+      inputRatioPriceUSD *
+      Number(record.audio_ratio || 0) *
+      Number(record.audio_completion_ratio || 0);
     const unitDivisor = tokenUnit === 'K' ? 1000 : 1;
     const unitLabel = tokenUnit === 'K' ? 'K' : 'M';
     const hasRatioValue = (value) =>
@@ -711,32 +810,46 @@ export const calculateModelPrice = ({
       return `${symbol}${numericPrice.toFixed(precision)}`;
     };
 
-    const inputPrice = formatTokenPrice(inputRatioPriceUSD);
-    const audioInputPrice = hasRatioValue(record.audio_ratio)
-      ? formatTokenPrice(inputRatioPriceUSD * Number(record.audio_ratio))
+    const priceOrOverride = (key, fallbackUSD) => {
+      const override = getModelGroupPriceOverride(record, usedGroup, key);
+      return formatTokenPrice(override === null ? fallbackUSD : override);
+    };
+
+    const hasOverrideValue = (key) =>
+      getModelGroupPriceOverride(record, usedGroup, key) !== null;
+
+    const inputPrice = priceOrOverride('prompt_price', inputRatioPriceUSD);
+    const audioInputOverride = getModelGroupPriceOverride(
+      record,
+      usedGroup,
+      'audio_price',
+    );
+    const audioInputPrice = hasRatioValue(record.audio_ratio) || audioInputOverride !== null
+      ? priceOrOverride('audio_price', inputAudioFallback)
       : null;
 
     return {
       inputPrice,
-      completionPrice: formatTokenPrice(
+      completionPrice: priceOrOverride(
+        'completion_price',
         inputRatioPriceUSD * Number(record.completion_ratio),
       ),
-      cachePrice: hasRatioValue(record.cache_ratio)
-        ? formatTokenPrice(inputRatioPriceUSD * Number(record.cache_ratio))
+      cachePrice: hasRatioValue(record.cache_ratio) || hasOverrideValue('cache_price')
+        ? priceOrOverride('cache_price', inputRatioPriceUSD * Number(record.cache_ratio || 0))
         : null,
-      createCachePrice: hasRatioValue(record.create_cache_ratio)
-        ? formatTokenPrice(inputRatioPriceUSD * Number(record.create_cache_ratio))
+      createCachePrice: hasRatioValue(record.create_cache_ratio) || hasOverrideValue('create_cache_price')
+        ? priceOrOverride('create_cache_price', inputRatioPriceUSD * Number(record.create_cache_ratio || 0))
         : null,
-      imagePrice: hasRatioValue(record.image_ratio)
-        ? formatTokenPrice(inputRatioPriceUSD * Number(record.image_ratio))
+      imagePrice: hasRatioValue(record.image_ratio) || hasOverrideValue('image_price')
+        ? priceOrOverride('image_price', inputRatioPriceUSD * Number(record.image_ratio || 0))
         : null,
       audioInputPrice,
       audioOutputPrice:
-        audioInputPrice && hasRatioValue(record.audio_completion_ratio)
-          ? formatTokenPrice(
-              inputRatioPriceUSD *
-                Number(record.audio_ratio) *
-                Number(record.audio_completion_ratio),
+        (audioInputPrice && hasRatioValue(record.audio_completion_ratio)) ||
+        hasOverrideValue('audio_completion_price')
+          ? priceOrOverride(
+              'audio_completion_price',
+              outputAudioFallback,
             )
           : null,
       unitLabel,
@@ -749,7 +862,15 @@ export const calculateModelPrice = ({
 
   if (record.quota_type === 1) {
     // 按次计费
-    const priceUSD = parseFloat(record.model_price) * usedGroupRatio;
+    const overridePrice = getModelGroupPriceOverride(
+      record,
+      usedGroup,
+      'model_price',
+    );
+    const priceUSD =
+      overridePrice === null
+        ? parseFloat(record.model_price) * usedGroupRatio
+        : overridePrice;
     const displayVal = displayPrice(priceUSD);
 
     return {

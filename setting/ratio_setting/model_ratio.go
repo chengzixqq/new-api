@@ -502,6 +502,10 @@ func GetCompletionRatioInfo(name string) CompletionRatioInfo {
 	}
 }
 
+func unlockedCompletionRatio(ratio float64) (float64, bool) {
+	return ratio, false
+}
+
 func getHardcodedCompletionModelRatio(name string) (float64, bool) {
 
 	isReservedModel := strings.HasSuffix(name, "-all") || strings.HasSuffix(name, "-gizmo-*")
@@ -512,7 +516,7 @@ func getHardcodedCompletionModelRatio(name string) (float64, bool) {
 	if strings.HasPrefix(name, "gpt-") {
 		if strings.HasPrefix(name, "gpt-4o") {
 			if name == "gpt-4o-2024-05-13" {
-				return 3, true
+				return unlockedCompletionRatio(3)
 			}
 			if strings.HasPrefix(name, "gpt-4o-mini-tts") {
 				return 20, false
@@ -522,58 +526,58 @@ func getHardcodedCompletionModelRatio(name string) (float64, bool) {
 		// gpt-5 匹配
 		if strings.HasPrefix(name, "gpt-5") {
 			if strings.HasPrefix(name, "gpt-5.5") {
-				return 6, true
+				return unlockedCompletionRatio(6)
 			}
 			if strings.HasPrefix(name, "gpt-5.4") {
 				if strings.HasPrefix(name, "gpt-5.4-nano") {
-					return 6.25, true
+					return unlockedCompletionRatio(6.25)
 				}
-				return 6, true
+				return unlockedCompletionRatio(6)
 			}
-			return 8, true
+			return unlockedCompletionRatio(8)
 		}
 		// gpt-4.5-preview匹配
 		if strings.HasPrefix(name, "gpt-4.5-preview") {
-			return 2, true
+			return unlockedCompletionRatio(2)
 		}
 		if strings.HasPrefix(name, "gpt-4-turbo") || strings.HasSuffix(name, "gpt-4-1106") || strings.HasSuffix(name, "gpt-4-1105") {
-			return 3, true
+			return unlockedCompletionRatio(3)
 		}
 		// 没有特殊标记的 gpt-4 模型默认倍率为 2
 		return 2, false
 	}
 	if strings.HasPrefix(name, "o1") || strings.HasPrefix(name, "o3") {
-		return 4, true
+		return unlockedCompletionRatio(4)
 	}
 	if name == "chatgpt-4o-latest" {
-		return 3, true
+		return unlockedCompletionRatio(3)
 	}
 
 	if strings.Contains(name, "claude-3") {
-		return 5, true
+		return unlockedCompletionRatio(5)
 	} else if strings.Contains(name, "claude-sonnet-4") || strings.Contains(name, "claude-opus-4") || strings.Contains(name, "claude-haiku-4") {
-		return 5, true
+		return unlockedCompletionRatio(5)
 	}
 
 	if strings.HasPrefix(name, "gpt-3.5") {
 		if name == "gpt-3.5-turbo" || strings.HasSuffix(name, "0125") {
 			// https://openai.com/blog/new-embedding-models-and-api-updates
 			// Updated GPT-3.5 Turbo model and lower pricing
-			return 3, true
+			return unlockedCompletionRatio(3)
 		}
 		if strings.HasSuffix(name, "1106") {
-			return 2, true
+			return unlockedCompletionRatio(2)
 		}
-		return 4.0 / 3.0, true
+		return unlockedCompletionRatio(4.0 / 3.0)
 	}
 	if strings.HasPrefix(name, "mistral-") {
-		return 3, true
+		return unlockedCompletionRatio(3)
 	}
 	if strings.HasPrefix(name, "gemini-") {
 		if strings.HasPrefix(name, "gemini-1.5") {
-			return 4, true
+			return unlockedCompletionRatio(4)
 		} else if strings.HasPrefix(name, "gemini-2.0") {
-			return 4, true
+			return unlockedCompletionRatio(4)
 		} else if strings.HasPrefix(name, "gemini-2.5-pro") { // 移除preview来增加兼容性，这里假设正式版的倍率和preview一致
 			return 8, false
 		} else if strings.HasPrefix(name, "gemini-2.5-flash") { // 处理不同的flash模型倍率
@@ -600,34 +604,34 @@ func getHardcodedCompletionModelRatio(name string) (float64, bool) {
 	if strings.HasPrefix(name, "command") {
 		switch name {
 		case "command-r":
-			return 3, true
+			return unlockedCompletionRatio(3)
 		case "command-r-plus":
-			return 5, true
+			return unlockedCompletionRatio(5)
 		case "command-r-08-2024":
-			return 4, true
+			return unlockedCompletionRatio(4)
 		case "command-r-plus-08-2024":
-			return 4, true
+			return unlockedCompletionRatio(4)
 		default:
 			return 4, false
 		}
 	}
 	// hint 只给官方上4倍率，由于开源模型供应商自行定价，不对其进行补全倍率进行强制对齐
 	if strings.HasPrefix(name, "ERNIE-Speed-") {
-		return 2, true
+		return unlockedCompletionRatio(2)
 	} else if strings.HasPrefix(name, "ERNIE-Lite-") {
-		return 2, true
+		return unlockedCompletionRatio(2)
 	} else if strings.HasPrefix(name, "ERNIE-Character") {
-		return 2, true
+		return unlockedCompletionRatio(2)
 	} else if strings.HasPrefix(name, "ERNIE-Functions") {
-		return 2, true
+		return unlockedCompletionRatio(2)
 	}
 	switch name {
 	case "llama2-70b-4096":
-		return 0.8 / 0.64, true
+		return unlockedCompletionRatio(0.8 / 0.64)
 	case "llama3-8b-8192":
-		return 2, true
+		return unlockedCompletionRatio(2)
 	case "llama3-70b-8192":
-		return 0.79 / 0.59, true
+		return unlockedCompletionRatio(0.79 / 0.59)
 	}
 	return 1, false
 }

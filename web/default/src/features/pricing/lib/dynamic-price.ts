@@ -27,6 +27,7 @@ import {
   type BillingVar,
   type ParsedTier,
 } from './billing-expr'
+import { getEffectiveGroupRatio } from './price'
 
 type DynamicPriceOptions = {
   tokenUnit: TokenUnit
@@ -71,7 +72,7 @@ export function getDynamicDisplayGroupRatio(model: PricingModel): number {
 
   let minRatio = Number.POSITIVE_INFINITY
   for (const group of groups) {
-    const ratio = ratios[group]
+    const ratio = getEffectiveGroupRatio(model, group, ratios)
     if (ratio !== undefined && ratio < minRatio) {
       minRatio = ratio
     }

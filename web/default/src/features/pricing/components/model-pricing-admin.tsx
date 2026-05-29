@@ -1,0 +1,490 @@
+import { useMemo, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Edit3, Save, X } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
+import {
+  updateModelGroupPricing,
+  updateModelGroupPricingByName,
+  updateModelPricing,
+  updateModelPricingByName,
+  type UpdateModelPricingPayload,
+} from '@/features/models/api'
+import {
+  ModelPricingEditorPanel,
+  type ModelRatioData,
+} from '@/features/system-settings/models/model-pricing-sheet'
+import { combineBillingExpr } from '@/features/pricing/lib/billing-expr'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { GroupBadge } from '@/components/group-badge'
+import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
+import { getEffectiveGroupRatio } from '../lib/price'
+import type { ModelGroupPricingItem, PricingModel } from '../types'
+
+type ModelPricingAdminPanelProps = {
+  model: PricingModel
+  groupRatio: Record<string, number>
+  usableGroup: Record<string, { desc: string; ratio: number }>
+  onSaved?: () => void
+}
+
+function formatDraft(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+    return ''
+  }
+  return Number(value).toString()
+}
+
+function ratioToPrice(ratio: number | null | undefined): string {
+  if (ratio === null || ratio === undefined || !Number.isFinite(Number(ratio))) {
+    return ''
+  }
+  return formatDraft(Number(ratio) * 2)
+}
+
+function ratioToLanePrice(
+  baseRatio: number | null | undefined,
+  laneRatio: number | null | undefined
+): string {
+  if (
+    baseRatio === null ||
+    baseRatio === undefined ||
+    laneRatio === null ||
+    laneRatio === undefined
+  ) {
+    return ''
+  }
+  const basePrice = Number(baseRatio) * 2
+  if (!Number.isFinite(basePrice) || !Number.isFinite(Number(laneRatio))) {
+    return ''
+  }
+  return formatDraft(basePrice * Number(laneRatio))
+}
+
+function modelToPricingData(model: PricingModel): ModelRatioData {
+  if (model.billing_mode === 'tiered_expr') {
+    return {
+      name: model.model_name,
+      billingMode: 'tiered_expr',
+      billingExpr: model.billing_expr || '',
+    }
+  }
+
+  if (!isTokenBasedModel(model)) {
+    return {
+      name: model.model_name,
+      billingMode: 'per-request',
+      price: formatDraft(model.model_price),
+    }
+  }
+
+  return {
+    name: model.model_name,
+    billingMode: 'per-token',
+    ratio: formatDraft(model.model_ratio),
+    completionRatio: formatDraft(model.completion_ratio),
+    cacheRatio: formatDraft(model.cache_ratio),
+    createCacheRatio: formatDraft(model.create_cache_ratio),
+    imageRatio: formatDraft(model.image_ratio),
+    audioRatio: formatDraft(model.audio_ratio),
+    audioCompletionRatio: formatDraft(model.audio_completion_ratio),
+  }
+}
+
+function parseOptionalNumber(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') {
+    return undefined
+  }
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+type GroupPricingDraft = {
+  ratio: string
+  model_price: string
+  prompt_price: string
+  completion_price: string
+  cache_price: string
+  create_cache_price: string
+  image_price: string
+  audio_price: string
+  audio_completion_price: string
+}
+
+const emptyGroupDraft = (): GroupPricingDraft => ({
+  ratio: '',
+  model_price: '',
+  prompt_price: '',
+  completion_price: '',
+  cache_price: '',
+  create_cache_price: '',
+  image_price: '',
+  audio_price: '',
+  audio_completion_price: '',
+})
+
+function groupPricingItemToDraft(item?: ModelGroupPricingItem): GroupPricingDraft {
+  const draft = emptyGroupDraft()
+  if (typeof item === 'number') {
+    draft.ratio = formatDraft(item)
+    return draft
+  }
+  if (!item || typeof item !== 'object') {
+    return draft
+  }
+  draft.ratio = formatDraft(item.ratio)
+  draft.model_price = formatDraft(item.model_price)
+  draft.prompt_price = formatDraft(item.prompt_price)
+  draft.completion_price = formatDraft(item.completion_price)
+  draft.cache_price = formatDraft(item.cache_price)
+  draft.create_cache_price = formatDraft(item.create_cache_price)
+  draft.image_price = formatDraft(item.image_price)
+  draft.audio_price = formatDraft(item.audio_price)
+  draft.audio_completion_price = formatDraft(item.audio_completion_price)
+  return draft
+}
+
+function draftToGroupPricingItem(
+  draft: GroupPricingDraft
+): ModelGroupPricingItem | undefined {
+  const item: Record<string, number> = {}
+  for (const key of Object.keys(draft) as Array<keyof GroupPricingDraft>) {
+    const parsed = parseOptionalNumber(draft[key])
+    if (parsed === undefined) {
+      continue
+    }
+    if (parsed < 0) {
+      throw new Error('分组价格必须是不小于 0 的有效数字')
+    }
+    item[key] = parsed
+  }
+  if (Object.keys(item).length === 0) {
+    return undefined
+  }
+  return item
+}
+
+function pricingDataToPayload(data: ModelRatioData): UpdateModelPricingPayload {
+  if (data.billingMode === 'tiered_expr') {
+    return {
+      billing_mode: 'tiered_expr',
+      billing_expr: combineBillingExpr(
+        data.billingExpr || '',
+        data.requestRuleExpr || ''
+      ),
+    }
+  }
+
+  if (data.billingMode === 'per-request') {
+    return {
+      billing_mode: 'per-request',
+      model_price: parseOptionalNumber(data.price),
+    }
+  }
+
+  return {
+    billing_mode: 'per-token',
+    model_ratio: parseOptionalNumber(data.ratio),
+    completion_ratio: parseOptionalNumber(data.completionRatio),
+    cache_ratio: parseOptionalNumber(data.cacheRatio),
+    create_cache_ratio: parseOptionalNumber(data.createCacheRatio),
+    image_ratio: parseOptionalNumber(data.imageRatio),
+    audio_ratio: parseOptionalNumber(data.audioRatio),
+    audio_completion_ratio: parseOptionalNumber(data.audioCompletionRatio),
+  }
+}
+
+export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [groupDrafts, setGroupDrafts] = useState<
+    Record<string, GroupPricingDraft>
+  >({})
+
+  const availableGroups = useMemo(
+    () => getAvailableGroups(props.model, props.usableGroup || {}),
+    [props.model, props.usableGroup]
+  )
+
+  const basePricingData = useMemo(
+    () => modelToPricingData(props.model),
+    [props.model]
+  )
+
+  const saveModelPricing = useMutation({
+    mutationFn: (data: ModelRatioData) => {
+      const payload = pricingDataToPayload(data)
+      if (props.model.id) {
+        return updateModelPricing(props.model.id, payload)
+      }
+      return updateModelPricingByName({
+        ...payload,
+        model_name: props.model.model_name,
+      })
+    },
+    onSuccess: async (res) => {
+      if (!res.success) {
+        toast.error(res.message || t('Failed to save'))
+        return
+      }
+      await queryClient.invalidateQueries({ queryKey: ['pricing'] })
+      props.onSaved?.()
+      toast.success(t('Saved'))
+      setEditing(false)
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : t('Failed to save'))
+    },
+  })
+
+  const saveGroupPricing = useMutation({
+    mutationFn: (data: Record<string, ModelGroupPricingItem>) => {
+      if (props.model.id) {
+        return updateModelGroupPricing(props.model.id, data)
+      }
+      return updateModelGroupPricingByName(props.model.model_name, data)
+    },
+    onSuccess: async (res) => {
+      if (!res.success) {
+        toast.error(res.message || t('Failed to save'))
+        return
+      }
+      await queryClient.invalidateQueries({ queryKey: ['pricing'] })
+      props.onSaved?.()
+      toast.success(t('Saved'))
+      setEditing(false)
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : t('Failed to save'))
+    },
+  })
+
+  const handleStartEdit = () => {
+    const nextDrafts: Record<string, GroupPricingDraft> = {}
+    for (const group of availableGroups) {
+      nextDrafts[group] = groupPricingItemToDraft(
+        props.model.group_pricing?.[group]
+      )
+    }
+    setGroupDrafts(nextDrafts)
+    setEditing(true)
+  }
+
+  const handleSaveGroups = () => {
+    const next: Record<string, ModelGroupPricingItem> = {}
+    try {
+      for (const [group, draft] of Object.entries(groupDrafts)) {
+        const item = draftToGroupPricingItem(draft)
+        if (item !== undefined) {
+          next[group] = item
+        }
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : t('Failed to save')
+      )
+      return
+    }
+    saveGroupPricing.mutate(next)
+  }
+
+  const updateGroupDraft = (
+    group: string,
+    field: keyof GroupPricingDraft,
+    value: string
+  ) => {
+    setGroupDrafts((current) => ({
+      ...current,
+      [group]: {
+        ...(current[group] || emptyGroupDraft()),
+        [field]: value,
+      },
+    }))
+  }
+
+  const groupPriceFields: Array<{
+    key: keyof GroupPricingDraft
+    label: string
+    placeholder?: string
+  }> = isTokenBasedModel(props.model)
+    ? [
+        { key: 'ratio', label: 'Ratio', placeholder: 'x' },
+        { key: 'prompt_price', label: 'Input price' },
+        { key: 'completion_price', label: 'Output price' },
+        { key: 'cache_price', label: 'Cache price' },
+        { key: 'create_cache_price', label: 'Cache Write' },
+        { key: 'image_price', label: 'Image price' },
+        { key: 'audio_price', label: 'Audio input' },
+        { key: 'audio_completion_price', label: 'Audio output' },
+      ]
+    : [
+        { key: 'ratio', label: 'Ratio', placeholder: 'x' },
+        { key: 'model_price', label: 'Model price' },
+      ]
+
+  return (
+    <section className='rounded-lg border bg-muted/10'>
+      <div className='flex items-center justify-between gap-3 border-b px-3 py-2'>
+        <div>
+          <div className='text-sm font-medium'>{t('Admin Pricing')}</div>
+          <div className='text-muted-foreground text-xs'>
+            {t('Edit this model base price and group overrides.')}
+          </div>
+        </div>
+        {!editing && (
+          <Button size='sm' variant='outline' onClick={handleStartEdit}>
+            <Edit3 className='size-3.5' />
+            {t('Edit')}
+          </Button>
+        )}
+      </div>
+
+      {editing ? (
+        <Tabs defaultValue='base' className='p-3'>
+          <TabsList className='grid w-full grid-cols-2'>
+            <TabsTrigger value='base'>{t('Base Price')}</TabsTrigger>
+            <TabsTrigger value='groups'>{t('Group Overrides')}</TabsTrigger>
+          </TabsList>
+          <TabsContent value='base' className='mt-3'>
+            <ModelPricingEditorPanel
+              editData={basePricingData}
+              selectedTargetCount={1}
+              onSave={(data) => saveModelPricing.mutate(data)}
+              onCancel={() => setEditing(false)}
+              closeOnSave={false}
+              className='max-h-[640px] min-h-[520px] rounded-lg'
+            />
+          </TabsContent>
+          <TabsContent value='groups' className='mt-3 space-y-3'>
+            <div className='text-muted-foreground rounded-md border bg-muted/20 p-2 text-xs'>
+              {t(
+                'Leave a field empty to use the normal multiplier-based price. Filled item prices are final USD prices for this model and group.'
+              )}
+            </div>
+            <div className='space-y-3'>
+              {availableGroups.map((group) => {
+                const fallback = props.groupRatio[group] ?? 1
+                const effective = getEffectiveGroupRatio(
+                  props.model,
+                  group,
+                  props.groupRatio
+                )
+                const draft = groupDrafts[group] || emptyGroupDraft()
+                return (
+                  <div
+                    key={group}
+                    className='rounded-lg border p-3'
+                  >
+                    <div className='mb-3 flex min-w-0 items-center justify-between gap-2'>
+                      <div className='flex min-w-0 items-center gap-2'>
+                        <GroupBadge group={group} size='sm' />
+                        <span className='text-muted-foreground truncate text-xs'>
+                          {t('Default')} {fallback}x
+                        </span>
+                      </div>
+                      <div className='font-mono text-xs text-muted-foreground'>
+                        {t('Current')} {effective}x
+                      </div>
+                    </div>
+                    <div className='grid gap-2 sm:grid-cols-2'>
+                      {groupPriceFields.map((field) => (
+                        <label key={field.key} className='space-y-1'>
+                          <span className='text-muted-foreground text-xs'>
+                            {t(field.label)}
+                          </span>
+                          <Input
+                            value={draft[field.key] ?? ''}
+                            placeholder={field.placeholder || '$/1M tokens'}
+                            inputMode='decimal'
+                            onChange={(event) =>
+                              updateGroupDraft(
+                                group,
+                                field.key,
+                                event.target.value
+                              )
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className='flex justify-end gap-2'>
+              <Button
+                variant='outline'
+                onClick={() => setEditing(false)}
+                disabled={saveGroupPricing.isPending}
+              >
+                <X className='size-3.5' />
+                {t('Cancel')}
+              </Button>
+              <Button
+                onClick={handleSaveGroups}
+                disabled={saveGroupPricing.isPending}
+              >
+                <Save className='size-3.5' />
+                {t('Save')}
+              </Button>
+            </div>
+          </TabsContent>
+        </Tabs>
+      ) : (
+        <div className='grid gap-2 p-3 sm:grid-cols-2'>
+          <div className='rounded-md border bg-background/60 p-3'>
+            <div className='text-muted-foreground text-xs'>
+              {t('Input price')}
+            </div>
+            <div className='font-mono text-sm font-semibold'>
+              {isTokenBasedModel(props.model)
+                ? ratioToPrice(props.model.model_ratio) || '-'
+                : formatDraft(props.model.model_price) || '-'}
+            </div>
+          </div>
+          <div className='rounded-md border bg-background/60 p-3'>
+            <div className='text-muted-foreground text-xs'>
+              {t('Group overrides')}
+            </div>
+            <div className='font-mono text-sm font-semibold'>
+              {Object.keys(props.model.group_pricing || {}).length}
+            </div>
+          </div>
+          {isTokenBasedModel(props.model) && (
+            <div className='rounded-md border bg-background/60 p-3 sm:col-span-2'>
+              <div className='text-muted-foreground mb-1 text-xs'>
+                {t('Extra prices')}
+              </div>
+              <div className='grid gap-1 font-mono text-xs sm:grid-cols-3'>
+                <span className='min-w-0 break-words'>
+                  {t('Output')}:{' '}
+                  {ratioToLanePrice(
+                    props.model.model_ratio,
+                    props.model.completion_ratio
+                  ) || '-'}
+                </span>
+                <span className='min-w-0 break-words'>
+                  {t('Cache')}:{' '}
+                  {ratioToLanePrice(
+                    props.model.model_ratio,
+                    props.model.cache_ratio
+                  ) || '-'}
+                </span>
+                <span className='min-w-0 break-words'>
+                  {t('Cache Write')}:{' '}
+                  {ratioToLanePrice(
+                    props.model.model_ratio,
+                    props.model.create_cache_ratio
+                  ) || '-'}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}

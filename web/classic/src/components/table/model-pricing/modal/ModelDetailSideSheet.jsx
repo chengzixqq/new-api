@@ -27,6 +27,8 @@ import ModelBasicInfo from './components/ModelBasicInfo';
 import ModelEndpoints from './components/ModelEndpoints';
 import ModelPricingTable from './components/ModelPricingTable';
 import DynamicPricingBreakdown from './components/DynamicPricingBreakdown';
+import ModelPricingAdminPanel from './components/ModelPricingAdminPanel';
+import { isRoot } from '../../../../helpers';
 
 const { Text } = Typography;
 
@@ -44,9 +46,11 @@ const ModelDetailSideSheet = ({
   vendorsMap,
   endpointMap,
   autoGroups,
+  onPricingSaved,
   t,
 }) => {
   const isMobile = useIsMobile();
+  const canEditPricing = isRoot();
 
   return (
     <SideSheet
@@ -121,6 +125,20 @@ const ModelDetailSideSheet = ({
                 t={t}
               />
             </div>
+            {canEditPricing && (
+              <>
+                <Divider margin={16} />
+                <div style={{ padding: '0 24px' }}>
+                  <ModelPricingAdminPanel
+                    modelData={modelData}
+                    groupRatio={groupRatio}
+                    usableGroup={usableGroup}
+                    onSaved={onPricingSaved}
+                    t={t}
+                  />
+                </div>
+              </>
+            )}
             <Divider margin={16} />
           </>
         )}

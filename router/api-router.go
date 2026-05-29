@@ -368,6 +368,10 @@ func SetApiRouter(router *gin.Engine) {
 			modelsRoute.GET("/search", controller.SearchModelsMeta)
 			modelsRoute.GET("/:id", controller.GetModelMeta)
 			modelsRoute.POST("/", controller.CreateModelMeta)
+			modelsRoute.PUT("/pricing_by_name", middleware.RootAuth(), controller.UpdateModelPricingByName)
+			modelsRoute.PUT("/group_pricing_by_name", middleware.RootAuth(), controller.UpdateModelGroupPricingByName)
+			modelsRoute.PUT("/:id/pricing", middleware.RootAuth(), controller.UpdateModelPricing)
+			modelsRoute.PUT("/:id/group_pricing", middleware.RootAuth(), controller.UpdateModelGroupPricing)
 			modelsRoute.PUT("/", controller.UpdateModelMeta)
 			modelsRoute.DELETE("/:id", controller.DeleteModelMeta)
 		}

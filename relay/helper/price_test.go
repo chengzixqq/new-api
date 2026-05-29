@@ -177,3 +177,30 @@ func mustJSON(t *testing.T, v any) string {
 	require.NoError(t, err)
 	return string(b)
 }
+
+func TestModelPriceHelperPerCallGroupPerRequestForcesPerCall(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	helperSeedGroupPricingModel(t,
+		"task-grp-model",
+		map[string]float64{"task-grp-model": 2},
+		`{"c":{"billing_mode":"per-request","model_price":0.05}}`,
+		[]string{"c"},
+	)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/mj/submit", nil)
+	ctx.Set("group", "c")
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "task-grp-model",
+		UserGroup:       "c",
+		UsingGroup:      "c",
+	}
+
+	priceData, err := ModelPriceHelperPerCall(ctx, info)
+	require.NoError(t, err)
+	require.True(t, priceData.UsePrice, "group per-request forces per-call billing on task surface")
+	require.Equal(t, 0.05, priceData.ModelPrice)
+	require.Equal(t, int(0.05*common.QuotaPerUnit), priceData.Quota)
+}

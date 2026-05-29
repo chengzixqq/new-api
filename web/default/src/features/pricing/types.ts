@@ -75,6 +75,8 @@ export type PricingModel = {
 
 export type ModelGroupPricingOverride = {
   ratio?: number | null
+  billing_mode?: string | null
+  billing_expr?: string | null
   model_price?: number | null
   prompt_price?: number | null
   completion_price?: number | null

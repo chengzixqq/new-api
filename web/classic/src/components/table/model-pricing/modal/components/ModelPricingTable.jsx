@@ -20,7 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
 import React from 'react';
 import { Avatar, Typography, Table, Tag } from '@douyinfe/semi-ui';
 import { IconCoinMoneyStroked } from '@douyinfe/semi-icons';
-import { calculateModelPrice, getModelPriceItems } from '../../../../../helpers';
+import { calculateModelPrice, getModelPriceItems, resolveGroupBillingMode } from '../../../../../helpers';
 
 const { Text } = Typography;
 
@@ -66,18 +66,19 @@ const ModelPricingTable = ({
       const groupRatioValue =
         groupRatio && groupRatio[group] ? groupRatio[group] : 1;
 
+      // 该分组生效的计费方式（分组覆盖优先）决定计费类型标签
+      const groupMode = resolveGroupBillingMode(modelData, group);
+
       return {
         key: group,
         group: group,
         ratio: groupRatioValue,
         billingType:
-          modelData?.billing_mode === 'tiered_expr'
+          groupMode === 'tiered_expr'
             ? t('动态计费')
-            : modelData?.quota_type === 0
-              ? t('按量计费')
-              : modelData?.quota_type === 1
-                ? t('按次计费')
-                : '-',
+            : groupMode === 'per-request'
+              ? t('按次计费')
+              : t('按量计费'),
         priceItems: getModelPriceItems(priceData, t, siteDisplayType),
       };
     });
@@ -96,7 +97,11 @@ const ModelPricingTable = ({
       },
     ];
 
-    const isDynamic = modelData?.billing_mode === 'tiered_expr';
+    const isDynamic =
+      modelData?.billing_mode === 'tiered_expr' ||
+      availableGroups.some(
+        (g) => resolveGroupBillingMode(modelData, g) === 'tiered_expr',
+      );
 
     // 动态计费时始终显示倍率列，否则根据设置
     if (showRatio || isDynamic) {

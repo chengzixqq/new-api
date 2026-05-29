@@ -521,3 +521,33 @@ func TestComposeTieredTextQuotaErrorFallbackUsesPreConsumedQuota(t *testing.T) {
 	require.Equal(t, int64(12500), summary.ToolCallSurchargeQuota.Round(0).IntPart())
 	require.Equal(t, 14500, quota)
 }
+
+func TestCalculateTextQuotaSummaryGroupTieredSnapshotSettles(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	// Frozen snapshot carries the GROUP's expression (set at the freeze point).
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "grp-expr-model",
+		PriceData: types.PriceData{
+			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 1},
+		},
+		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+			BillingMode:  "tiered_expr",
+			ModelName:    "grp-expr-model",
+			ExprString:   `tier("base", p * 7)`,
+			GroupRatio:   1,
+			QuotaPerUnit: 500000,
+		},
+		StartTime: time.Now(),
+	}
+
+	usage := &dto.Usage{PromptTokens: 1000, CompletionTokens: 0, TotalTokens: 1000}
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	ok, quota, _ := TryTieredSettle(relayInfo, BuildTieredTokenParams(usage, false, billingexpr.UsedVars(`tier("base", p * 7)`)))
+	require.True(t, ok)
+	// 1000 * 7 = 7000 raw / 1e6 * 500000 = 3500
+	require.Equal(t, 3500, quota)
+	_ = summary
+}

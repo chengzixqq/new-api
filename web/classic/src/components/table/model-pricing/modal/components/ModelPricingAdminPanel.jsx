@@ -84,7 +84,21 @@ const parseOptionalNumber = (value) => {
   return number === null ? undefined : number;
 };
 
+const NUMERIC_GROUP_FIELDS = [
+  'ratio',
+  'model_price',
+  'prompt_price',
+  'completion_price',
+  'cache_price',
+  'create_cache_price',
+  'image_price',
+  'audio_price',
+  'audio_completion_price',
+];
+
 const emptyGroupDraft = () => ({
+  billing_mode: '',
+  billing_expr: '',
   ratio: '',
   model_price: '',
   prompt_price: '',
@@ -105,23 +119,74 @@ const groupPricingItemToDraft = (item) => {
   if (!item || typeof item !== 'object') {
     return draft;
   }
-  Object.keys(draft).forEach((key) => {
+  NUMERIC_GROUP_FIELDS.forEach((key) => {
     draft[key] = formatNumber(item[key]);
   });
+  draft.billing_mode =
+    typeof item.billing_mode === 'string' ? item.billing_mode : '';
+  draft.billing_expr =
+    typeof item.billing_expr === 'string' ? item.billing_expr : '';
   return draft;
 };
 
 const draftToGroupPricingItem = (draft, t) => {
   const item = {};
-  Object.entries(draft || {}).forEach(([key, value]) => {
-    const parsed = parseOptionalNumber(value);
+  NUMERIC_GROUP_FIELDS.forEach((key) => {
+    const parsed = parseOptionalNumber(draft?.[key]);
     if (parsed === undefined) return;
     if (parsed < 0) {
       throw new Error(t('分组价格必须是不小于 0 的有效数字'));
     }
     item[key] = parsed;
   });
+  const mode = (draft?.billing_mode || '').trim();
+  if (mode) {
+    item.billing_mode = mode;
+    if (mode === 'tiered_expr') {
+      const expr = (draft?.billing_expr || '').trim();
+      if (!expr) {
+        throw new Error(t('分组表达式计费需要填写计费表达式'));
+      }
+      item.billing_expr = expr;
+    }
+  }
   return Object.keys(item).length > 0 ? item : undefined;
+};
+
+const groupModeOptions = (t) => [
+  { value: '', label: t('继承模型默认') },
+  { value: 'per-token', label: t('按量计费') },
+  { value: 'per-request', label: t('按次计费') },
+  { value: 'tiered_expr', label: t('表达式计费') },
+];
+
+const effectiveGroupMode = (draft, modelData) => {
+  if (draft.billing_mode) {
+    return draft.billing_mode;
+  }
+  if (modelData?.billing_mode === 'tiered_expr') {
+    return 'tiered_expr';
+  }
+  return isTokenModel(modelData) ? 'per-token' : 'per-request';
+};
+
+const fieldsForGroupMode = (mode, t) => {
+  if (mode === 'per-request') {
+    return [['model_price', t('模型价格'), '$/次']];
+  }
+  if (mode === 'tiered_expr') {
+    return [];
+  }
+  return [
+    ['ratio', t('覆盖倍率'), 'x'],
+    ['prompt_price', t('输入价格'), PRICE_SUFFIX],
+    ['completion_price', t('补全价格'), PRICE_SUFFIX],
+    ['cache_price', t('缓存读取价格'), PRICE_SUFFIX],
+    ['create_cache_price', t('缓存创建价格'), PRICE_SUFFIX],
+    ['image_price', t('图片输入价格'), PRICE_SUFFIX],
+    ['audio_price', t('音频输入价格'), PRICE_SUFFIX],
+    ['audio_completion_price', t('音频补全价格'), PRICE_SUFFIX],
+  ];
 };
 
 const getAvailableGroups = (modelData, usableGroup) => {
@@ -343,22 +408,6 @@ export default function ModelPricingAdminPanel({
     }));
   };
 
-  const groupPriceFields = isTokenModel(modelData)
-    ? [
-        ['ratio', t('覆盖倍率'), 'x'],
-        ['prompt_price', t('输入价格'), PRICE_SUFFIX],
-        ['completion_price', t('补全价格'), PRICE_SUFFIX],
-        ['cache_price', t('缓存读取价格'), PRICE_SUFFIX],
-        ['create_cache_price', t('缓存创建价格'), PRICE_SUFFIX],
-        ['image_price', t('图片输入价格'), PRICE_SUFFIX],
-        ['audio_price', t('音频输入价格'), PRICE_SUFFIX],
-        ['audio_completion_price', t('音频补全价格'), PRICE_SUFFIX],
-      ]
-    : [
-        ['ratio', t('覆盖倍率'), 'x'],
-        ['model_price', t('模型价格'), '$/次'],
-      ];
-
   return (
     <div>
       <div className='flex items-center justify-between mb-4'>
@@ -545,30 +594,111 @@ export default function ModelPricingAdminPanel({
                         {row.effectiveRatio}x
                       </Text>
                     </div>
-                    <div className='grid grid-cols-1 md:grid-cols-2 gap-3'>
-                      {groupPriceFields.map(([field, label, suffix]) => (
-                        <div key={field}>
-                          <Text size='small' type='secondary'>
-                            {label}
-                          </Text>
-                          {editing ? (
-                            <Input
-                              value={draft[field] ?? ''}
-                              placeholder={suffix}
-                              suffix={suffix}
-                              onChange={(value) =>
-                                updateGroupDraft(row.group, field, value)
-                              }
-                              style={{ marginTop: 4 }}
-                            />
+                    {(() => {
+                      const groupMode = effectiveGroupMode(draft, modelData);
+                      const fields = fieldsForGroupMode(groupMode, t);
+                      const modeOptions = groupModeOptions(t);
+                      const currentModeLabel =
+                        modeOptions.find(
+                          (opt) => opt.value === draft.billing_mode,
+                        )?.label || t('继承模型默认');
+                      return (
+                        <div className='space-y-3'>
+                          <div>
+                            <Text
+                              size='small'
+                              type='secondary'
+                              style={{ display: 'block', marginBottom: 4 }}
+                            >
+                              {t('分组计费模式')}
+                            </Text>
+                            {editing ? (
+                              <RadioGroup
+                                type='button'
+                                size='small'
+                                value={draft.billing_mode}
+                                onChange={(event) =>
+                                  updateGroupDraft(
+                                    row.group,
+                                    'billing_mode',
+                                    event.target.value,
+                                  )
+                                }
+                              >
+                                {modeOptions.map((opt) => (
+                                  <Radio key={opt.value} value={opt.value}>
+                                    {opt.label}
+                                  </Radio>
+                                ))}
+                              </RadioGroup>
+                            ) : (
+                              <div className='font-mono mt-1'>
+                                {currentModeLabel}
+                              </div>
+                            )}
+                          </div>
+
+                          {groupMode === 'tiered_expr' ? (
+                            <div>
+                              <Text
+                                size='small'
+                                type='secondary'
+                                style={{ display: 'block', marginBottom: 4 }}
+                              >
+                                {t('计费表达式')}
+                              </Text>
+                              {editing ? (
+                                <TextArea
+                                  value={draft.billing_expr ?? ''}
+                                  placeholder={'tier("base", p * 2 + c * 8)'}
+                                  autosize={{ minRows: 3, maxRows: 8 }}
+                                  style={{
+                                    fontFamily: 'monospace',
+                                    fontSize: 12,
+                                  }}
+                                  onChange={(value) =>
+                                    updateGroupDraft(
+                                      row.group,
+                                      'billing_expr',
+                                      value,
+                                    )
+                                  }
+                                />
+                              ) : (
+                                <div className='font-mono mt-1'>
+                                  {draft.billing_expr || '-'}
+                                </div>
+                              )}
+                            </div>
                           ) : (
-                            <div className='font-mono mt-1'>
-                              {draft[field] || '-'}
+                            <div className='grid grid-cols-1 md:grid-cols-2 gap-3'>
+                              {fields.map(([field, label, suffix]) => (
+                                <div key={field}>
+                                  <Text size='small' type='secondary'>
+                                    {label}
+                                  </Text>
+                                  {editing ? (
+                                    <Input
+                                      value={draft[field] ?? ''}
+                                      placeholder={suffix}
+                                      suffix={suffix}
+                                      onChange={(value) =>
+                                        updateGroupDraft(row.group, field, value)
+                                      }
+                                      style={{ marginTop: 4 }}
+                                    />
+                                  ) : (
+                                    <div className='font-mono mt-1'>
+                                      {draft[field] || '-'}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
                             </div>
                           )}
                         </div>
-                      ))}
-                    </div>
+                      );
+                    })()}
                   </Card>
                 );
               })}

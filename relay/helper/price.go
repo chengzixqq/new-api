@@ -74,6 +74,18 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.
 	return groupRatioInfo
 }
 
+// resolveGroupBillingMode returns the group's explicitly-pinned billing mode.
+// ok=false means the group did not pin a mode (inherit the model default).
+func resolveGroupBillingMode(groupRatioInfo types.GroupRatioInfo) (mode string, ok bool) {
+	if !groupRatioInfo.HasModelGroupPricing || groupRatioInfo.ModelGroupPricing == nil {
+		return "", false
+	}
+	if groupRatioInfo.ModelGroupPricing.BillingMode == nil {
+		return "", false
+	}
+	return *groupRatioInfo.ModelGroupPricing.BillingMode, true
+}
+
 func priceToQuotaPerToken(price float64) float64 {
 	return price / 1_000_000 * common.QuotaPerUnit
 }
@@ -117,9 +129,25 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 
 	groupRatioInfo := HandleGroupRatio(c, info)
 
-	// Check if this model uses tiered_expr billing
-	if billing_setting.GetBillingMode(info.OriginModelName) == billing_setting.BillingModeTieredExpr {
-		return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo)
+	// Per-group billing-mode override (group pin wins; else inherit the model default).
+	groupMode, groupHasMode := resolveGroupBillingMode(groupRatioInfo)
+	modelTiered := billing_setting.GetBillingMode(info.OriginModelName) == billing_setting.BillingModeTieredExpr
+
+	if groupHasMode {
+		switch groupMode {
+		case types.GroupBillingModeTieredExpr:
+			groupExpr := ""
+			if groupRatioInfo.ModelGroupPricing != nil && groupRatioInfo.ModelGroupPricing.BillingExpr != nil {
+				groupExpr = *groupRatioInfo.ModelGroupPricing.BillingExpr
+			}
+			return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo, groupExpr)
+		case types.GroupBillingModePerRequest:
+			usePrice = true
+		case types.GroupBillingModePerToken:
+			usePrice = false
+		}
+	} else if modelTiered {
+		return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo, "")
 	}
 
 	var preConsumedQuota int
@@ -291,10 +319,14 @@ func HasModelBillingConfig(modelName string) bool {
 	return ok && strings.TrimSpace(expr) != ""
 }
 
-func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta, groupRatioInfo types.GroupRatioInfo) (types.PriceData, error) {
-	exprStr, ok := billing_setting.GetBillingExpr(info.OriginModelName)
-	if !ok {
-		return types.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", info.OriginModelName)
+func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta, groupRatioInfo types.GroupRatioInfo, exprOverride string) (types.PriceData, error) {
+	exprStr := strings.TrimSpace(exprOverride)
+	if exprStr == "" {
+		var ok bool
+		exprStr, ok = billing_setting.GetBillingExpr(info.OriginModelName)
+		if !ok {
+			return types.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", info.OriginModelName)
+		}
 	}
 
 	estimatedCompletionTokens := 0

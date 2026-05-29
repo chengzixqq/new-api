@@ -138,6 +138,23 @@ func sanitizeModelGroupPricingItem(item types.ModelGroupPricing) (types.ModelGro
 			pair.assign(*pair.source)
 		}
 	}
+	if item.BillingMode != nil {
+		mode := strings.TrimSpace(*item.BillingMode)
+		switch mode {
+		case types.GroupBillingModePerToken, types.GroupBillingModePerRequest:
+			cleaned.BillingMode = &mode
+		case types.GroupBillingModeTieredExpr:
+			if item.BillingExpr != nil {
+				expr := strings.TrimSpace(*item.BillingExpr)
+				if expr != "" {
+					cleaned.BillingMode = &mode
+					cleaned.BillingExpr = &expr
+				}
+			}
+			// tiered_expr with empty expr: drop the mode (treated as inherit)
+		}
+		// any other value: invalid -> dropped (inherit)
+	}
 	return cleaned, !cleaned.IsEmpty()
 }
 
@@ -206,7 +223,7 @@ func GetModelGroupRatio(modelName, group string) (float64, bool) {
 
 func GetModelGroupPriceOverrides(modelName, group string) (types.ModelGroupPricing, bool) {
 	pricing, ok := GetModelGroupPricing(modelName, group)
-	if !ok || !pricing.HasPriceOverride() {
+	if !ok || (!pricing.HasPriceOverride() && !pricing.HasBillingMode()) {
 		return types.ModelGroupPricing{}, false
 	}
 	return pricing, true
@@ -225,7 +242,7 @@ func modelGroupPricingRatioView(values map[string]types.ModelGroupPricing) map[s
 	}
 	result := make(map[string]interface{}, len(values))
 	for group, item := range values {
-		if !item.HasPriceOverride() {
+		if !item.HasPriceOverride() && !item.HasBillingMode() {
 			if ratio, ok := getPricingRatio(item); ok {
 				result[group] = ratio
 				continue

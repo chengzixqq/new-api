@@ -118,3 +118,70 @@ func TestNormalizeModelGroupPricingDropsInvalidAndEmptyValues(t *testing.T) {
 func float64Ptr(value float64) *float64 {
 	return &value
 }
+
+func TestSanitizeKeepsValidGroupBillingMode(t *testing.T) {
+	in := types.ModelGroupPricing{
+		BillingMode: strPtrModel(types.GroupBillingModePerRequest),
+		ModelPrice:  float64Ptr(0.02),
+	}
+	out, ok := sanitizeModelGroupPricingItem(in)
+	require.True(t, ok)
+	require.NotNil(t, out.BillingMode)
+	require.Equal(t, types.GroupBillingModePerRequest, *out.BillingMode)
+	require.NotNil(t, out.ModelPrice)
+	require.Equal(t, 0.02, *out.ModelPrice)
+}
+
+func TestSanitizeDropsInvalidGroupBillingMode(t *testing.T) {
+	in := types.ModelGroupPricing{
+		BillingMode: strPtrModel("nonsense"),
+		Ratio:       float64Ptr(1.2),
+	}
+	out, ok := sanitizeModelGroupPricingItem(in)
+	require.True(t, ok) // ratio keeps it non-empty
+	require.Nil(t, out.BillingMode, "invalid mode dropped -> inherit")
+	require.NotNil(t, out.Ratio)
+}
+
+func TestSanitizeTieredExprRequiresNonEmptyExpr(t *testing.T) {
+	withExpr := types.ModelGroupPricing{
+		BillingMode: strPtrModel(types.GroupBillingModeTieredExpr),
+		BillingExpr: strPtrModel(`tier("base", p * 2)`),
+	}
+	out, ok := sanitizeModelGroupPricingItem(withExpr)
+	require.True(t, ok)
+	require.NotNil(t, out.BillingExpr)
+
+	noExpr := types.ModelGroupPricing{
+		BillingMode: strPtrModel(types.GroupBillingModeTieredExpr),
+	}
+	out2, ok2 := sanitizeModelGroupPricingItem(noExpr)
+	require.False(t, ok2, "tiered_expr without expr is empty -> dropped")
+	require.Nil(t, out2.BillingExpr)
+}
+
+func TestGetModelGroupPriceOverridesReturnsModeOnlyGroup(t *testing.T) {
+	setupPricingGroupTestDB(t)
+
+	require.NoError(t, DB.Create(&Model{
+		ModelName:    "mode-only-model",
+		Status:       1,
+		SyncOfficial: 1,
+		// group "c" pins per-request but sets NO price fields
+		GroupPricing: `{"c":{"billing_mode":"per-request"}}`,
+	}).Error)
+	require.NoError(t, DB.Create(&Channel{
+		Id: 1, Type: constant.ChannelTypeOpenAI, Key: "k", Status: 1, Name: "ch",
+	}).Error)
+	require.NoError(t, DB.Create(&Ability{
+		Group: "c", Model: "mode-only-model", ChannelId: 1, Enabled: true,
+	}).Error)
+
+	GetPricing()
+	override, ok := GetModelGroupPriceOverrides("mode-only-model", "c")
+	require.True(t, ok, "mode-only group must be returned")
+	require.NotNil(t, override.BillingMode)
+	require.Equal(t, types.GroupBillingModePerRequest, *override.BillingMode)
+}
+
+func strPtrModel(s string) *string { return &s }

@@ -119,6 +119,7 @@ type ModelPricingSheetProps = {
   onOpenChange: (open: boolean) => void
   onSave: (data: ModelRatioData) => void
   onCancel?: () => void
+  closeOnSave?: boolean
   editData?: ModelRatioData | null
   selectedTargetCount?: number
 }
@@ -419,6 +420,7 @@ export function ModelPricingEditorPanel({
   editData,
   selectedTargetCount = 0,
   onCancel,
+  closeOnSave = true,
   className,
 }: ModelPricingEditorPanelProps) {
   const { t } = useTranslation()
@@ -731,8 +733,10 @@ export function ModelPricingEditorPanel({
     }
 
     onSave(data)
-    form.reset()
-    onCancel?.()
+    if (closeOnSave) {
+      form.reset()
+      onCancel?.()
+    }
   }
 
   const activeName = watchedValues.name || editData?.name || t('New model')

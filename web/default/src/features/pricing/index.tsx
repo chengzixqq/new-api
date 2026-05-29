@@ -50,6 +50,7 @@ export function Pricing() {
     isLoading,
     priceRate,
     usdExchangeRate,
+    refetch,
   } = usePricingData()
 
   const {
@@ -279,6 +280,7 @@ export function Pricing() {
               usdExchangeRate={usdExchangeRate ?? 1}
               tokenUnit={tokenUnit}
               showRechargePrice={showRechargePrice}
+              onPricingUpdated={refetch}
             />
           )}
         </PageTransition>

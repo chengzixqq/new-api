@@ -68,6 +68,7 @@ import {
   formatFixedPrice,
   formatGroupPrice,
   getEffectiveGroupRatio,
+  resolveGroupBillingMode,
 } from '../lib/price'
 import type {
   Modality,
@@ -841,6 +842,10 @@ function GroupPricingSection(props: {
                 group,
                 props.groupRatio
               )
+              const groupMode = resolveGroupBillingMode(props.model, group)
+              const priceColSpan = isTokenBased
+                ? 2 + extraPriceTypes.length
+                : 1
               return (
                 <TableRow key={group}>
                   <TableCell className='py-2.5'>
@@ -849,7 +854,33 @@ function GroupPricingSection(props: {
                   <TableCell className='text-muted-foreground py-2.5 font-mono'>
                     {ratio}x
                   </TableCell>
-                  {isTokenBased ? (
+                  {groupMode === 'per-request' ? (
+                    <TableCell
+                      colSpan={priceColSpan}
+                      className='py-2.5 text-right font-mono'
+                    >
+                      {formatFixedPrice(
+                        props.model,
+                        group,
+                        showRechargePrice,
+                        props.priceRate,
+                        props.usdExchangeRate,
+                        props.groupRatio
+                      )}
+                      <span className='text-muted-foreground/40 ml-1 text-xs font-normal'>
+                        / {t('request')}
+                      </span>
+                    </TableCell>
+                  ) : groupMode === 'tiered_expr' ? (
+                    <TableCell
+                      colSpan={priceColSpan}
+                      className='py-2.5 text-right'
+                    >
+                      <span className='text-xs font-medium text-amber-700 dark:text-amber-300'>
+                        {t('Dynamic Pricing')}
+                      </span>
+                    </TableCell>
+                  ) : isTokenBased ? (
                     <>
                       <TableCell className='py-2.5 text-right font-mono'>
                         {formatGroupPrice(
@@ -895,9 +926,22 @@ function GroupPricingSection(props: {
                     </>
                   ) : (
                     <TableCell className='py-2.5 text-right font-mono'>
-                      {formatFixedPrice(
+                      {formatGroupPrice(
                         props.model,
                         group,
+                        'input',
+                        props.tokenUnit,
+                        showRechargePrice,
+                        props.priceRate,
+                        props.usdExchangeRate,
+                        props.groupRatio
+                      )}
+                      <span className='text-muted-foreground/40 mx-1'>/</span>
+                      {formatGroupPrice(
+                        props.model,
+                        group,
+                        'output',
+                        props.tokenUnit,
                         showRechargePrice,
                         props.priceRate,
                         props.usdExchangeRate,

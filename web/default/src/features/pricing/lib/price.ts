@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { formatCurrencyFromUSD } from '@/lib/currency'
-import { QUOTA_TYPE_VALUES, TOKEN_UNIT_DIVISORS } from '../constants'
+import { FILTER_ALL, QUOTA_TYPE_VALUES, TOKEN_UNIT_DIVISORS } from '../constants'
 import type {
   ModelGroupPricingOverride,
   PricingModel,
@@ -91,6 +91,32 @@ function getModelGroupPricingOverride(
     return undefined
   }
   return pricing
+}
+
+/**
+ * Resolve the effective billing mode for a group, mirroring the backend
+ * freeze-point precedence: group override billing_mode → model tiered_expr →
+ * model quota_type (REQUEST → per-request, otherwise per-token).
+ */
+export function resolveGroupBillingMode(
+  model: PricingModel,
+  group: string
+): 'per-token' | 'per-request' | 'tiered_expr' {
+  const override = getModelGroupPricingOverride(model, group)
+  const overrideMode = override?.billing_mode
+  if (
+    overrideMode === 'per-token' ||
+    overrideMode === 'per-request' ||
+    overrideMode === 'tiered_expr'
+  ) {
+    return overrideMode
+  }
+  if (model.billing_mode === 'tiered_expr') {
+    return 'tiered_expr'
+  }
+  return model.quota_type === QUOTA_TYPE_VALUES.REQUEST
+    ? 'per-request'
+    : 'per-token'
 }
 
 function getPriceOverride(
@@ -245,7 +271,11 @@ function applyRechargeRate(
 }
 
 /**
- * Format token-based price for display
+ * Format token-based price for display.
+ *
+ * When `group` is provided (and not the "all" sentinel), the price is computed
+ * for that specific group using its effective billing mode; otherwise the
+ * minimum across all enabled groups is used.
  */
 export function formatPrice(
   model: PricingModel,
@@ -253,9 +283,19 @@ export function formatPrice(
   tokenUnit: TokenUnit,
   showWithRecharge = false,
   priceRate = 1,
-  usdExchangeRate = 1
+  usdExchangeRate = 1,
+  group?: string
 ): string {
-  if (model.quota_type === QUOTA_TYPE_VALUES.REQUEST) {
+  const specificGroup =
+    group && group !== FILTER_ALL ? group : undefined
+
+  // Respect the group's effective billing mode: a per-request/dynamic group has
+  // no token price to show.
+  if (specificGroup) {
+    if (resolveGroupBillingMode(model, specificGroup) !== 'per-token') {
+      return '-'
+    }
+  } else if (model.quota_type === QUOTA_TYPE_VALUES.REQUEST) {
     return '-'
   }
 
@@ -263,12 +303,18 @@ export function formatPrice(
     ? model.enable_groups
     : []
   const groupRatio = model.group_ratio || {}
-  let priceInUSD = calculateMinGroupTokenPrice(
-    model,
-    type,
-    enableGroups,
-    groupRatio
-  )
+  let priceInUSD: number
+  if (specificGroup) {
+    const ratio = getEffectiveGroupRatio(model, specificGroup, groupRatio)
+    priceInUSD = calculateTokenPrice(model, type, ratio, specificGroup)
+  } else {
+    priceInUSD = calculateMinGroupTokenPrice(
+      model,
+      type,
+      enableGroups,
+      groupRatio
+    )
+  }
   if (!Number.isFinite(priceInUSD)) {
     return '-'
   }
@@ -300,7 +346,7 @@ export function formatGroupPrice(
   usdExchangeRate = 1,
   groupRatio: Record<string, number>
 ): string {
-  if (model.quota_type === QUOTA_TYPE_VALUES.REQUEST) {
+  if (resolveGroupBillingMode(model, group) !== 'per-token') {
     return '-'
   }
 
@@ -336,7 +382,7 @@ export function formatFixedPrice(
   usdExchangeRate = 1,
   groupRatio: Record<string, number>
 ): string {
-  if (model.quota_type !== QUOTA_TYPE_VALUES.REQUEST) {
+  if (resolveGroupBillingMode(model, group) !== 'per-request') {
     return '-'
   }
 
@@ -364,15 +410,27 @@ export function formatFixedPrice(
 }
 
 /**
- * Format fixed price for pay-per-request models (minimum price from all groups)
+ * Format fixed price for pay-per-request models.
+ *
+ * When `group` is provided (and not the "all" sentinel), the price is computed
+ * for that specific group; otherwise the minimum across all enabled groups is
+ * used.
  */
 export function formatRequestPrice(
   model: PricingModel,
   showWithRecharge = false,
   priceRate = 1,
-  usdExchangeRate = 1
+  usdExchangeRate = 1,
+  group?: string
 ): string {
-  if (model.quota_type !== QUOTA_TYPE_VALUES.REQUEST) {
+  const specificGroup =
+    group && group !== FILTER_ALL ? group : undefined
+
+  if (specificGroup) {
+    if (resolveGroupBillingMode(model, specificGroup) !== 'per-request') {
+      return '-'
+    }
+  } else if (model.quota_type !== QUOTA_TYPE_VALUES.REQUEST) {
     return '-'
   }
 
@@ -380,11 +438,19 @@ export function formatRequestPrice(
     ? model.enable_groups
     : []
   const groupRatio = model.group_ratio || {}
-  let priceInUSD = calculateMinGroupRequestPrice(
-    model,
-    enableGroups,
-    groupRatio
-  )
+  let priceInUSD: number
+  if (specificGroup) {
+    const ratio = getEffectiveGroupRatio(model, specificGroup, groupRatio)
+    const override = getModelGroupPricingOverride(model, specificGroup)
+    priceInUSD =
+      override?.model_price !== undefined &&
+      override.model_price !== null &&
+      Number.isFinite(Number(override.model_price))
+        ? Number(override.model_price)
+        : (model.model_price || 0) * ratio
+  } else {
+    priceInUSD = calculateMinGroupRequestPrice(model, enableGroups, groupRatio)
+  }
 
   priceInUSD = applyRechargeRate(
     priceInUSD,

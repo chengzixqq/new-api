@@ -21,7 +21,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { GroupBadge } from '@/components/group-badge'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
 import { getEffectiveGroupRatio } from '../lib/price'
-import type { ModelGroupPricingItem, PricingModel } from '../types'
+import type {
+  ModelGroupPricingItem,
+  ModelGroupPricingOverride,
+  PricingModel,
+} from '../types'
 
 type ModelPricingAdminPanelProps = {
   model: PricingModel
@@ -102,6 +106,8 @@ function parseOptionalNumber(value: string | undefined): number | undefined {
 }
 
 type GroupPricingDraft = {
+  billing_mode: string
+  billing_expr: string
   ratio: string
   model_price: string
   prompt_price: string
@@ -114,6 +120,8 @@ type GroupPricingDraft = {
 }
 
 const emptyGroupDraft = (): GroupPricingDraft => ({
+  billing_mode: '',
+  billing_expr: '',
   ratio: '',
   model_price: '',
   prompt_price: '',
@@ -143,14 +151,30 @@ function groupPricingItemToDraft(item?: ModelGroupPricingItem): GroupPricingDraf
   draft.image_price = formatDraft(item.image_price)
   draft.audio_price = formatDraft(item.audio_price)
   draft.audio_completion_price = formatDraft(item.audio_completion_price)
+  draft.billing_mode =
+    typeof item.billing_mode === 'string' ? item.billing_mode : ''
+  draft.billing_expr =
+    typeof item.billing_expr === 'string' ? item.billing_expr : ''
   return draft
 }
+
+const NUMERIC_GROUP_FIELDS: Array<keyof GroupPricingDraft> = [
+  'ratio',
+  'model_price',
+  'prompt_price',
+  'completion_price',
+  'cache_price',
+  'create_cache_price',
+  'image_price',
+  'audio_price',
+  'audio_completion_price',
+]
 
 function draftToGroupPricingItem(
   draft: GroupPricingDraft
 ): ModelGroupPricingItem | undefined {
-  const item: Record<string, number> = {}
-  for (const key of Object.keys(draft) as Array<keyof GroupPricingDraft>) {
+  const item: Record<string, number | string> = {}
+  for (const key of NUMERIC_GROUP_FIELDS) {
     const parsed = parseOptionalNumber(draft[key])
     if (parsed === undefined) {
       continue
@@ -160,10 +184,21 @@ function draftToGroupPricingItem(
     }
     item[key] = parsed
   }
+  const mode = draft.billing_mode.trim()
+  if (mode) {
+    item.billing_mode = mode
+    if (mode === 'tiered_expr') {
+      const expr = draft.billing_expr.trim()
+      if (!expr) {
+        throw new Error('分组表达式计费需要填写计费表达式')
+      }
+      item.billing_expr = expr
+    }
+  }
   if (Object.keys(item).length === 0) {
     return undefined
   }
-  return item
+  return item as ModelGroupPricingOverride
 }
 
 function pricingDataToPayload(data: ModelRatioData): UpdateModelPricingPayload {

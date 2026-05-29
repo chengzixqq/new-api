@@ -36,7 +36,12 @@ import {
   IconEdit,
   IconSave,
 } from '@douyinfe/semi-icons';
-import { API, getEffectiveModelGroupRatio, showError, showSuccess } from '../../../../../helpers';
+import {
+  API,
+  getEffectiveModelGroupRatio,
+  showError,
+  showSuccess,
+} from '../../../../../helpers';
 import TieredPricingEditor from '../../../../../pages/Setting/Ratio/components/TieredPricingEditor';
 import {
   combineBillingExpr,
@@ -75,7 +80,8 @@ const deriveLanePrice = (ratio, basePrice, fallback = '') => {
 const deriveRatioFromPrice = (price, basePrice) => {
   const priceNumber = toNumberOrNull(price);
   const baseNumber = toNumberOrNull(basePrice);
-  if (priceNumber === null || baseNumber === null || baseNumber === 0) return null;
+  if (priceNumber === null || baseNumber === null || baseNumber === 0)
+    return null;
   return priceNumber / baseNumber;
 };
 
@@ -210,7 +216,9 @@ const buildInitialBaseForm = (modelData) => {
         : 'per-token';
   const promptPrice = ratioToPrice(modelData?.model_ratio);
   const audioInputPrice = deriveLanePrice(modelData?.audio_ratio, promptPrice);
-  const splitExpr = splitBillingExprAndRequestRules(modelData?.billing_expr || '');
+  const splitExpr = splitBillingExprAndRequestRules(
+    modelData?.billing_expr || '',
+  );
 
   return {
     billing_mode: billingMode,
@@ -218,7 +226,10 @@ const buildInitialBaseForm = (modelData) => {
     prompt_price: promptPrice,
     completion_price: deriveLanePrice(modelData?.completion_ratio, promptPrice),
     cache_price: deriveLanePrice(modelData?.cache_ratio, promptPrice),
-    create_cache_price: deriveLanePrice(modelData?.create_cache_ratio, promptPrice),
+    create_cache_price: deriveLanePrice(
+      modelData?.create_cache_ratio,
+      promptPrice,
+    ),
     image_price: deriveLanePrice(modelData?.image_ratio, promptPrice),
     audio_price: audioInputPrice,
     audio_completion_price: deriveLanePrice(
@@ -286,7 +297,10 @@ const buildBasePayload = (modelData, baseForm, t) => {
       deriveRatioFromPrice(baseForm.audio_price, baseForm.prompt_price),
     ),
     audio_completion_ratio: parseOptionalNumber(
-      deriveRatioFromPrice(baseForm.audio_completion_price, baseForm.audio_price),
+      deriveRatioFromPrice(
+        baseForm.audio_completion_price,
+        baseForm.audio_price,
+      ),
     ),
   };
 };
@@ -302,7 +316,9 @@ export default function ModelPricingAdminPanel({
 }) {
   const [editing, setEditing] = useState(false);
   const [activeTab, setActiveTab] = useState('base');
-  const [baseForm, setBaseForm] = useState(() => buildInitialBaseForm(modelData));
+  const [baseForm, setBaseForm] = useState(() =>
+    buildInitialBaseForm(modelData),
+  );
   const [groupDrafts, setGroupDrafts] = useState({});
   const [savingBase, setSavingBase] = useState(false);
   const [savingGroups, setSavingGroups] = useState(false);
@@ -434,7 +450,11 @@ export default function ModelPricingAdminPanel({
             {t('取消')}
           </Button>
         ) : (
-          <Button size='small' icon={<IconEdit />} onClick={() => setEditing(true)}>
+          <Button
+            size='small'
+            icon={<IconEdit />}
+            onClick={() => setEditing(true)}
+          >
             {t('编辑')}
           </Button>
         )}
@@ -478,7 +498,9 @@ export default function ModelPricingAdminPanel({
                     billingExpr: baseForm.billing_expr,
                   }}
                   requestRuleExpr={baseForm.request_rule_expr}
-                  onExprChange={(value) => updateBaseForm('billing_expr', value)}
+                  onExprChange={(value) =>
+                    updateBaseForm('billing_expr', value)
+                  }
                   onRequestRuleExprChange={(value) =>
                     updateBaseForm('request_rule_expr', value)
                   }
@@ -542,15 +564,18 @@ export default function ModelPricingAdminPanel({
               </div>
             )}
 
-            {!isTokenModel(modelData) && baseForm.billing_mode === 'per-token' && (
-              <Banner
-                type='warning'
-                fullMode={false}
-                closeIcon={null}
-                description={t('当前模型原本是按次计费，保存后会切换为按量计费。')}
-                style={{ marginTop: 12 }}
-              />
-            )}
+            {!isTokenModel(modelData) &&
+              baseForm.billing_mode === 'per-token' && (
+                <Banner
+                  type='warning'
+                  fullMode={false}
+                  closeIcon={null}
+                  description={t(
+                    '当前模型原本是按次计费，保存后会切换为按量计费。',
+                  )}
+                  style={{ marginTop: 12 }}
+                />
+              )}
 
             {editing && (
               <div className='flex justify-end mt-4'>
@@ -683,7 +708,11 @@ export default function ModelPricingAdminPanel({
                                       placeholder={suffix}
                                       suffix={suffix}
                                       onChange={(value) =>
-                                        updateGroupDraft(row.group, field, value)
+                                        updateGroupDraft(
+                                          row.group,
+                                          field,
+                                          value,
+                                        )
                                       }
                                       style={{ marginTop: 4 }}
                                     />
@@ -705,8 +734,14 @@ export default function ModelPricingAdminPanel({
             </div>
             {editing && (
               <>
-                <Text type='secondary' size='small' style={{ display: 'block', marginTop: 8 }}>
-                  {t('留空表示使用默认分组倍率。覆盖倍率是最终倍率，不会再叠加默认倍率。')}
+                <Text
+                  type='secondary'
+                  size='small'
+                  style={{ display: 'block', marginTop: 8 }}
+                >
+                  {t(
+                    '留空表示使用默认分组倍率。覆盖倍率是最终倍率，不会再叠加默认倍率。',
+                  )}
                 </Text>
                 <div className='flex justify-end mt-4'>
                   <Button

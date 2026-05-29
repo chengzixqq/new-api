@@ -8,6 +8,8 @@ import (
 
 type ModelGroupPricing struct {
 	Ratio                *float64 `json:"ratio,omitempty"`
+	BillingMode          *string  `json:"billing_mode,omitempty"`
+	BillingExpr          *string  `json:"billing_expr,omitempty"`
 	ModelPrice           *float64 `json:"model_price,omitempty"`
 	PromptPrice          *float64 `json:"prompt_price,omitempty"`
 	CompletionPrice      *float64 `json:"completion_price,omitempty"`
@@ -17,6 +19,13 @@ type ModelGroupPricing struct {
 	AudioPrice           *float64 `json:"audio_price,omitempty"`
 	AudioCompletionPrice *float64 `json:"audio_completion_price,omitempty"`
 }
+
+// Group-level billing modes. nil BillingMode = inherit the model default.
+const (
+	GroupBillingModePerToken   = "per-token"
+	GroupBillingModePerRequest = "per-request"
+	GroupBillingModeTieredExpr = "tiered_expr"
+)
 
 func floatPtr(value float64) *float64 {
 	return &value
@@ -44,7 +53,7 @@ func (p *ModelGroupPricing) UnmarshalJSON(data []byte) error {
 }
 
 func (p ModelGroupPricing) MarshalJSON() ([]byte, error) {
-	if p.Ratio != nil && !p.HasPriceOverride() {
+	if p.Ratio != nil && !p.HasPriceOverride() && !p.HasBillingMode() {
 		return json.Marshal(*p.Ratio)
 	}
 	type alias ModelGroupPricing
@@ -53,6 +62,10 @@ func (p ModelGroupPricing) MarshalJSON() ([]byte, error) {
 
 func (p ModelGroupPricing) HasRatio() bool {
 	return p.Ratio != nil
+}
+
+func (p ModelGroupPricing) HasBillingMode() bool {
+	return p.BillingMode != nil
 }
 
 func (p ModelGroupPricing) HasPriceOverride() bool {
@@ -67,7 +80,7 @@ func (p ModelGroupPricing) HasPriceOverride() bool {
 }
 
 func (p ModelGroupPricing) IsEmpty() bool {
-	return !p.HasRatio() && !p.HasPriceOverride()
+	return !p.HasRatio() && !p.HasPriceOverride() && !p.HasBillingMode()
 }
 
 type GroupRatioInfo struct {

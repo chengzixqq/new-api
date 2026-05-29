@@ -640,34 +640,6 @@ export const getEffectiveModelGroupRatio = (record, group, groupRatio = {}) => {
   return 1;
 };
 
-const hasExplicitModelGroupRatio = (record, group, groupRatio = {}) => {
-  const modelGroupPricing = record?.group_pricing?.[group];
-  if (
-    modelGroupPricing &&
-    typeof modelGroupPricing === 'object' &&
-    modelGroupPricing.ratio !== undefined &&
-    modelGroupPricing.ratio !== null &&
-    Number.isFinite(Number(modelGroupPricing.ratio))
-  ) {
-    return true;
-  }
-  const modelGroupRatio = modelGroupPricing;
-  if (
-    modelGroupRatio !== undefined &&
-    modelGroupRatio !== null &&
-    Number.isFinite(Number(modelGroupRatio))
-  ) {
-    return true;
-  }
-
-  const globalGroupRatio = groupRatio?.[group];
-  return (
-    globalGroupRatio !== undefined &&
-    globalGroupRatio !== null &&
-    Number.isFinite(Number(globalGroupRatio))
-  );
-};
-
 const getModelGroupPricingOverride = (record, group) => {
   const pricing = record?.group_pricing?.[group];
   return pricing && typeof pricing === 'object' ? pricing : null;
@@ -681,6 +653,28 @@ const getModelGroupPriceOverride = (record, group, key) => {
     : null;
 };
 
+// 解析某个分组的“生效计费方式”，优先级与后端冻结点一致：
+// 分组覆盖 billing_mode → 模型级 tiered_expr → 模型 quota_type(0=按量,1=按次)
+export const resolveGroupBillingMode = (record, group) => {
+  const override = getModelGroupPricingOverride(record, group);
+  if (override && override.billing_mode) {
+    return override.billing_mode;
+  }
+  if (record?.billing_mode === 'tiered_expr') {
+    return 'tiered_expr';
+  }
+  return record?.quota_type === 1 ? 'per-request' : 'per-token';
+};
+
+// 解析某个分组生效的计费表达式：分组覆盖优先，否则回退模型级表达式
+export const resolveGroupBillingExpr = (record, group) => {
+  const override = getModelGroupPricingOverride(record, group);
+  if (override && override.billing_expr) {
+    return override.billing_expr;
+  }
+  return record?.billing_expr;
+};
+
 export const calculateModelPrice = ({
   record,
   selectedGroup,
@@ -692,15 +686,17 @@ export const calculateModelPrice = ({
   precision = 4,
 }) => {
   // 1. 选择实际使用的分组
+  //    - 指定具体分组时：始终使用该分组（即使它只配置了价格覆盖、没有显式倍率），
+  //      修复“切换到具体分组仍显示全分组最低价”的问题。
+  //    - 选择“全部分组(all)”时：在模型可用分组中挑选代表价最低的分组。
   let usedGroup = selectedGroup;
   let usedGroupRatio =
-    selectedGroup === 'all' ||
-    !hasExplicitModelGroupRatio(record, selectedGroup, groupRatio)
+    selectedGroup === 'all'
       ? undefined
       : getEffectiveModelGroupRatio(record, selectedGroup, groupRatio);
 
-  if (selectedGroup === 'all' || usedGroupRatio === undefined) {
-    // 在模型可用分组中选择倍率最小的分组，若无则使用 1
+  if (selectedGroup === 'all') {
+    // 在模型可用分组中选择“代表价”最低的分组，若无则使用 1
     let minScore = Number.POSITIVE_INFINITY;
     if (
       Array.isArray(record.enable_groups) &&
@@ -708,23 +704,32 @@ export const calculateModelPrice = ({
     ) {
       record.enable_groups.forEach((g) => {
         const r = getEffectiveModelGroupRatio(record, g, groupRatio);
-        const promptOverride = getModelGroupPriceOverride(
-          record,
-          g,
-          'prompt_price',
-        );
-        const requestOverride = getModelGroupPriceOverride(
-          record,
-          g,
-          'model_price',
-        );
+        if (r === undefined) return;
+        // 按该分组自身生效的计费方式计算代表价，使最低价比较更准确
+        const mode = resolveGroupBillingMode(record, g);
         let score = r;
-        if (record.quota_type === 0 && promptOverride !== null) {
-          score = promptOverride;
-        } else if (record.quota_type === 1 && requestOverride !== null) {
-          score = requestOverride;
+        if (mode === 'per-request') {
+          const requestOverride = getModelGroupPriceOverride(
+            record,
+            g,
+            'model_price',
+          );
+          score =
+            requestOverride !== null
+              ? requestOverride
+              : parseFloat(record.model_price || 0) * r;
+        } else if (mode === 'per-token') {
+          const promptOverride = getModelGroupPriceOverride(
+            record,
+            g,
+            'prompt_price',
+          );
+          score =
+            promptOverride !== null
+              ? promptOverride
+              : Number(record.model_ratio || 0) * 2 * r;
         }
-        if (r !== undefined && score < minScore) {
+        if (score < minScore) {
           minScore = score;
           usedGroup = g;
           usedGroupRatio = r;
@@ -738,18 +743,24 @@ export const calculateModelPrice = ({
     }
   }
 
+  // 该分组生效的计费方式（分组覆盖优先），决定走哪条价格分支
+  const billingMode = resolveGroupBillingMode(record, usedGroup);
+
   // 2. 动态计费（tiered_expr）
-  if (record.billing_mode === 'tiered_expr' && record.billing_expr) {
-    return {
-      isDynamicPricing: true,
-      billingExpr: record.billing_expr,
-      usedGroup,
-      usedGroupRatio,
-    };
+  if (billingMode === 'tiered_expr') {
+    const billingExpr = resolveGroupBillingExpr(record, usedGroup);
+    if (billingExpr) {
+      return {
+        isDynamicPricing: true,
+        billingExpr,
+        usedGroup,
+        usedGroupRatio,
+      };
+    }
   }
 
   // 3. 根据计费类型计算价格
-  if (record.quota_type === 0) {
+  if (billingMode === 'per-token') {
     // 按量计费
     const isTokensDisplay = quotaDisplayType === 'TOKENS';
     const inputRatioPriceUSD = record.model_ratio * 2 * usedGroupRatio;
@@ -860,7 +871,7 @@ export const calculateModelPrice = ({
     };
   }
 
-  if (record.quota_type === 1) {
+  if (billingMode === 'per-request') {
     // 按次计费
     const overridePrice = getModelGroupPriceOverride(
       record,

@@ -213,7 +213,34 @@ func updateModelPricingForMeta(c *gin.Context, m model.Model, req UpdateModelPri
 	common.ApiSuccess(c, nil)
 }
 
+func validateGroupBillingModes(groupPricing map[string]types.ModelGroupPricing) error {
+	for group, item := range groupPricing {
+		if item.BillingMode == nil {
+			continue
+		}
+		mode := strings.TrimSpace(*item.BillingMode)
+		switch mode {
+		case "", types.GroupBillingModePerToken, types.GroupBillingModePerRequest:
+			// ok (empty == inherit)
+		case types.GroupBillingModeTieredExpr:
+			if item.BillingExpr == nil || strings.TrimSpace(*item.BillingExpr) == "" {
+				return fmt.Errorf("分组 %s 表达式计费需要填写计费表达式", group)
+			}
+			if err := billing_setting.SmokeTestExpr(strings.TrimSpace(*item.BillingExpr)); err != nil {
+				return fmt.Errorf("分组 %s 计费表达式校验失败: %s", group, err.Error())
+			}
+		default:
+			return fmt.Errorf("分组 %s 不支持的计费方式: %s", group, mode)
+		}
+	}
+	return nil
+}
+
 func updateModelGroupPricingForMeta(c *gin.Context, m model.Model, req UpdateModelGroupPricingRequest) {
+	if err := validateGroupBillingModes(req.GroupPricing); err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
 	cleaned := model.NormalizeModelGroupPricing(req.GroupPricing)
 	raw, err := model.ModelGroupPricingJSON(cleaned)
 	if err != nil {

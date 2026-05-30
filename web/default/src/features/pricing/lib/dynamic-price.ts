@@ -27,7 +27,7 @@ import {
   type BillingVar,
   type ParsedTier,
 } from './billing-expr'
-import { getEffectiveGroupRatio } from './price'
+import { getEffectiveGroupRatio, resolveGroupBillingMode } from './price'
 
 type DynamicPriceOptions = {
   tokenUnit: TokenUnit
@@ -72,6 +72,10 @@ export function getDynamicDisplayGroupRatio(model: PricingModel): number {
 
   let minRatio = Number.POSITIVE_INFINITY
   for (const group of groups) {
+    // Only groups that still resolve to tiered_expr contribute to the dynamic
+    // display ratio; a group overridden to per-token/per-request is shown with
+    // its own mode elsewhere and must not lower the dynamic price here.
+    if (resolveGroupBillingMode(model, group) !== 'tiered_expr') continue
     const ratio = getEffectiveGroupRatio(model, group, ratios)
     if (ratio !== undefined && ratio < minRatio) {
       minRatio = ratio

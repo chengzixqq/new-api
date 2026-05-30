@@ -153,13 +153,22 @@ function calculateMinGroupTokenPrice(
   }
   let minPrice = Number.POSITIVE_INFINITY
   for (const group of enableGroups) {
+    // The aggregate (all-groups) card/table shape is per-token here; only
+    // compare groups that still resolve to per-token, so a group overridden to
+    // per-request/tiered_expr does not pollute the min token price.
+    if (resolveGroupBillingMode(model, group) !== 'per-token') continue
     const ratio = getEffectiveGroupRatio(model, group, groupRatio)
     const price = calculateTokenPrice(model, type, ratio, group)
     if (Number.isFinite(price) && price < minPrice) {
       minPrice = price
     }
   }
-  return minPrice === Number.POSITIVE_INFINITY ? NaN : minPrice
+  // No group resolves to per-token (or none has this price type): fall back to
+  // the model default at ratio 1 — same semantics as the empty-groups branch
+  // above and as the classic frontend, keeping the two themes symmetric.
+  return minPrice === Number.POSITIVE_INFINITY
+    ? calculateTokenPrice(model, type, 1)
+    : minPrice
 }
 
 function calculateMinGroupRequestPrice(
@@ -172,6 +181,9 @@ function calculateMinGroupRequestPrice(
   }
   let minPrice = Number.POSITIVE_INFINITY
   for (const group of enableGroups) {
+    // Mirror of calculateMinGroupTokenPrice: only per-request groups participate
+    // in the aggregate per-request min.
+    if (resolveGroupBillingMode(model, group) !== 'per-request') continue
     const ratio = getEffectiveGroupRatio(model, group, groupRatio)
     const override = getModelGroupPricingOverride(model, group)
     const price =

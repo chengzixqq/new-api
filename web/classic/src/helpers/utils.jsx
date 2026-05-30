@@ -18,7 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import { Toast, Pagination } from '@douyinfe/semi-ui';
-import { toastConstants, BILLING_PRICING_VARS, BILLING_VAR_REGEX } from '../constants';
+import {
+  toastConstants,
+  BILLING_PRICING_VARS,
+  BILLING_VAR_REGEX,
+} from '../constants';
 import React from 'react';
 import { toast } from 'react-toastify';
 import {
@@ -695,20 +699,32 @@ export const calculateModelPrice = ({
       ? undefined
       : getEffectiveModelGroupRatio(record, selectedGroup, groupRatio);
 
+  // 走哪条价格分支由“生效计费方式”决定：聚合“全部分组”视图用模型级模式，
+  // 指定具体分组用分组级覆盖（BUG 1 修复点，见 else 分支）。
+  let billingMode;
+
   if (selectedGroup === 'all') {
-    // 在模型可用分组中选择“代表价”最低的分组，若无则使用 1
+    // 在模型可用分组中选择“代表价”最低的分组，若无则使用 1。
+    // 聚合“全部分组”视图的卡片形态由模型级计费方式决定，因此最低价仅在
+    // “生效计费方式与模型级一致”的分组之间比较；被分组覆盖成其它计费方式的
+    // 分组不参与，避免跨模式（倍率/价格/表达式）不可比而选错代表分组，
+    // 也避免“计费类型标签”与“价格摘要”不一致。
     let minScore = Number.POSITIVE_INFINITY;
+    const modelLevelMode =
+      record.billing_mode === 'tiered_expr'
+        ? 'tiered_expr'
+        : record.quota_type === 1
+          ? 'per-request'
+          : 'per-token';
     if (
       Array.isArray(record.enable_groups) &&
       record.enable_groups.length > 0
     ) {
       record.enable_groups.forEach((g) => {
+        if (resolveGroupBillingMode(record, g) !== modelLevelMode) return;
         const r = getEffectiveModelGroupRatio(record, g, groupRatio);
-        if (r === undefined) return;
-        // 按该分组自身生效的计费方式计算代表价，使最低价比较更准确
-        const mode = resolveGroupBillingMode(record, g);
         let score = r;
-        if (mode === 'per-request') {
+        if (modelLevelMode === 'per-request') {
           const requestOverride = getModelGroupPriceOverride(
             record,
             g,
@@ -718,7 +734,7 @@ export const calculateModelPrice = ({
             requestOverride !== null
               ? requestOverride
               : parseFloat(record.model_price || 0) * r;
-        } else if (mode === 'per-token') {
+        } else if (modelLevelMode === 'per-token') {
           const promptOverride = getModelGroupPriceOverride(
             record,
             g,
@@ -729,6 +745,7 @@ export const calculateModelPrice = ({
               ? promptOverride
               : Number(record.model_ratio || 0) * 2 * r;
         }
+        // tiered_expr：score 维持为倍率 r，在同为 tiered 的分组间取最低倍率
         if (score < minScore) {
           minScore = score;
           usedGroup = g;
@@ -741,10 +758,15 @@ export const calculateModelPrice = ({
     if (usedGroupRatio === undefined) {
       usedGroupRatio = 1;
     }
-  }
 
-  // 该分组生效的计费方式（分组覆盖优先），决定走哪条价格分支
-  const billingMode = resolveGroupBillingMode(record, usedGroup);
+    // 聚合视图的计费形态恒为模型级模式：min-loop 仅在同模式分组之间挑选，
+    // 若一个都不匹配则保持模型默认（usedGroupRatio=1），无需依赖 'all'
+    // sentinel 的回退解析，也与 default 前端的显式回退保持对称。
+    billingMode = modelLevelMode;
+  } else {
+    // 指定具体分组：分组级计费方式覆盖优先（BUG 1 修复点）
+    billingMode = resolveGroupBillingMode(record, usedGroup);
+  }
 
   // 2. 动态计费（tiered_expr）
   if (billingMode === 'tiered_expr') {
@@ -835,9 +857,10 @@ export const calculateModelPrice = ({
       usedGroup,
       'audio_price',
     );
-    const audioInputPrice = hasRatioValue(record.audio_ratio) || audioInputOverride !== null
-      ? priceOrOverride('audio_price', inputAudioFallback)
-      : null;
+    const audioInputPrice =
+      hasRatioValue(record.audio_ratio) || audioInputOverride !== null
+        ? priceOrOverride('audio_price', inputAudioFallback)
+        : null;
 
     return {
       inputPrice,
@@ -845,23 +868,33 @@ export const calculateModelPrice = ({
         'completion_price',
         inputRatioPriceUSD * Number(record.completion_ratio),
       ),
-      cachePrice: hasRatioValue(record.cache_ratio) || hasOverrideValue('cache_price')
-        ? priceOrOverride('cache_price', inputRatioPriceUSD * Number(record.cache_ratio || 0))
-        : null,
-      createCachePrice: hasRatioValue(record.create_cache_ratio) || hasOverrideValue('create_cache_price')
-        ? priceOrOverride('create_cache_price', inputRatioPriceUSD * Number(record.create_cache_ratio || 0))
-        : null,
-      imagePrice: hasRatioValue(record.image_ratio) || hasOverrideValue('image_price')
-        ? priceOrOverride('image_price', inputRatioPriceUSD * Number(record.image_ratio || 0))
-        : null,
+      cachePrice:
+        hasRatioValue(record.cache_ratio) || hasOverrideValue('cache_price')
+          ? priceOrOverride(
+              'cache_price',
+              inputRatioPriceUSD * Number(record.cache_ratio || 0),
+            )
+          : null,
+      createCachePrice:
+        hasRatioValue(record.create_cache_ratio) ||
+        hasOverrideValue('create_cache_price')
+          ? priceOrOverride(
+              'create_cache_price',
+              inputRatioPriceUSD * Number(record.create_cache_ratio || 0),
+            )
+          : null,
+      imagePrice:
+        hasRatioValue(record.image_ratio) || hasOverrideValue('image_price')
+          ? priceOrOverride(
+              'image_price',
+              inputRatioPriceUSD * Number(record.image_ratio || 0),
+            )
+          : null,
       audioInputPrice,
       audioOutputPrice:
         (audioInputPrice && hasRatioValue(record.audio_completion_ratio)) ||
         hasOverrideValue('audio_completion_price')
-          ? priceOrOverride(
-              'audio_completion_price',
-              outputAudioFallback,
-            )
+          ? priceOrOverride('audio_completion_price', outputAudioFallback)
           : null,
       unitLabel,
       isPerToken: true,
@@ -903,11 +936,7 @@ export const calculateModelPrice = ({
   };
 };
 
-export const getModelPriceItems = (
-  priceData,
-  t,
-  quotaDisplayType = 'USD',
-) => {
+export const getModelPriceItems = (priceData, t, quotaDisplayType = 'USD') => {
   if (priceData.isDynamicPricing) {
     return [
       {
@@ -1015,7 +1044,10 @@ export const getModelPriceItems = (
         value: priceData.audioOutputPrice,
         suffix: unitSuffix,
       },
-    ].filter((item) => item.value !== null && item.value !== undefined && item.value !== '');
+    ].filter(
+      (item) =>
+        item.value !== null && item.value !== undefined && item.value !== '',
+    );
   }
 
   return [
@@ -1025,12 +1057,18 @@ export const getModelPriceItems = (
       value: priceData.price,
       suffix: ` / ${t('次')}`,
     },
-  ].filter((item) => item.value !== null && item.value !== undefined && item.value !== '');
+  ].filter(
+    (item) =>
+      item.value !== null && item.value !== undefined && item.value !== '',
+  );
 };
 
 // 格式化动态计费摘要（用于卡片视图，与 formatPriceInfo 风格统一）
 export const formatDynamicPriceSummary = (billingExpr, t, groupRatio = 1) => {
-  if (!billingExpr) return <span style={{ color: 'var(--semi-color-text-1)' }}>{t('动态计费')}</span>;
+  if (!billingExpr)
+    return (
+      <span style={{ color: 'var(--semi-color-text-1)' }}>{t('动态计费')}</span>
+    );
 
   const quotaDisplayType = localStorage.getItem('quota_display_type') || 'USD';
   let symbol = '$';
@@ -1061,7 +1099,9 @@ export const formatDynamicPriceSummary = (billingExpr, t, groupRatio = 1) => {
 
   const varLabels = BILLING_PRICING_VARS.map((v) => [v.key, v.label]);
 
-  const hasTimeCondition = /\b(?:hour|minute|weekday|month|day)\(/.test(exprBody);
+  const hasTimeCondition = /\b(?:hour|minute|weekday|month|day)\(/.test(
+    exprBody,
+  );
   const hasRequestCondition = /\b(?:param|header)\(/.test(exprBody);
 
   const tags = [];
@@ -1086,35 +1126,35 @@ export const formatDynamicPriceSummary = (billingExpr, t, groupRatio = 1) => {
         </>
       )}
       {(tierCount > 1 || hasTimeCondition || hasRequestCondition) && (
-      <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-        <span
-          style={{
-            display: 'inline-block',
-            padding: '1px 6px',
-            borderRadius: 4,
-            fontSize: 11,
-            background: 'var(--semi-color-warning-light-default)',
-            color: 'var(--semi-color-warning)',
-          }}
-        >
-          {t('动态计费')}
-        </span>
-        {tags.map((tag) => (
+        <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <span
-            key={tag}
             style={{
               display: 'inline-block',
               padding: '1px 6px',
               borderRadius: 4,
               fontSize: 11,
-              background: 'var(--semi-color-fill-1)',
-              color: 'var(--semi-color-text-2)',
+              background: 'var(--semi-color-warning-light-default)',
+              color: 'var(--semi-color-warning)',
             }}
           >
-            {tag}
+            {t('动态计费')}
           </span>
-        ))}
-      </span>
+          {tags.map((tag) => (
+            <span
+              key={tag}
+              style={{
+                display: 'inline-block',
+                padding: '1px 6px',
+                borderRadius: 4,
+                fontSize: 11,
+                background: 'var(--semi-color-fill-1)',
+                color: 'var(--semi-color-text-2)',
+              }}
+            >
+              {tag}
+            </span>
+          ))}
+        </span>
       )}
     </>
   );

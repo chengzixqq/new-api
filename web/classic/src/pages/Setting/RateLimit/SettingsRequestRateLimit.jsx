@@ -39,6 +39,9 @@ export default function RequestRateLimit(props) {
     ModelRequestRateLimitSuccessCount: 1000,
     ModelRequestRateLimitDurationMinutes: 1,
     ModelRequestRateLimitGroup: '',
+    ModelRequestRateLimitAdminFollowUser: true,
+    ModelRequestRateLimitAdminCount: 0,
+    ModelRequestRateLimitAdminSuccessCount: 0,
   });
   const refForm = useRef();
   const [inputsRow, setInputsRow] = useState(inputs);
@@ -177,6 +180,64 @@ export default function RequestRateLimit(props) {
                 />
               </Col>
             </Row>
+            <Row>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.Switch
+                  field={'ModelRequestRateLimitAdminFollowUser'}
+                  label={t('管理员/超级管理员跟随用户限速')}
+                  size='default'
+                  checkedText='｜'
+                  uncheckedText='〇'
+                  extraText={t(
+                    '开启时管理员、超级管理员与普通用户使用相同限速；关闭后改用下方管理员档（0 代表不限制）',
+                  )}
+                  onChange={(value) => {
+                    setInputs({
+                      ...inputs,
+                      ModelRequestRateLimitAdminFollowUser: value,
+                    });
+                  }}
+                />
+              </Col>
+            </Row>
+            {!inputs.ModelRequestRateLimitAdminFollowUser && (
+              <Row>
+                <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                  <Form.InputNumber
+                    label={t('管理员每周期最多请求次数')}
+                    step={1}
+                    min={0}
+                    max={100000000}
+                    suffix={t('次')}
+                    extraText={t('包括失败请求的次数，0代表不限制')}
+                    field={'ModelRequestRateLimitAdminCount'}
+                    onChange={(value) =>
+                      setInputs({
+                        ...inputs,
+                        ModelRequestRateLimitAdminCount: String(value),
+                      })
+                    }
+                  />
+                </Col>
+                <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                  <Form.InputNumber
+                    label={t('管理员每周期最多请求完成次数')}
+                    step={1}
+                    min={0}
+                    max={100000000}
+                    suffix={t('次')}
+                    extraText={t('只包括请求成功的次数，0代表不限制')}
+                    field={'ModelRequestRateLimitAdminSuccessCount'}
+                    onChange={(value) =>
+                      setInputs({
+                        ...inputs,
+                        ModelRequestRateLimitAdminSuccessCount: String(value),
+                      })
+                    }
+                  />
+                </Col>
+              </Row>
+            )}
             <Row>
               <Col xs={24} sm={16}>
                 <Form.TextArea

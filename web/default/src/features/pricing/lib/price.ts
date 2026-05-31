@@ -17,13 +17,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { formatCurrencyFromUSD } from '@/lib/currency'
-import { FILTER_ALL, QUOTA_TYPE_VALUES, TOKEN_UNIT_DIVISORS } from '../constants'
+import {
+  FILTER_ALL,
+  QUOTA_TYPE_VALUES,
+  TOKEN_UNIT_DIVISORS,
+} from '../constants'
 import type {
   ModelGroupPricingOverride,
   PricingModel,
   TokenUnit,
   PriceType,
 } from '../types'
+import {
+  getModelGroupPricingOverride,
+  resolveGroupBillingMode,
+} from './group-billing'
+
+// Re-export the group-resolution helpers so existing `from './price'` and
+// barrel (`from '../lib'`) importers keep their import paths. group-billing.ts
+// is the single source of truth (shared with the dynamic-pricing path), which
+// removes the previous duplicate resolveGroupBillingMode definition.
+export { resolveGroupBillingMode }
 
 // ----------------------------------------------------------------------------
 // Price Calculation Utilities
@@ -80,43 +94,6 @@ export function getEffectiveGroupRatio(
     return Number(globalRatio)
   }
   return 1
-}
-
-function getModelGroupPricingOverride(
-  model: PricingModel,
-  group: string
-): ModelGroupPricingOverride | undefined {
-  const pricing = model.group_pricing?.[group]
-  if (!pricing || typeof pricing !== 'object') {
-    return undefined
-  }
-  return pricing
-}
-
-/**
- * Resolve the effective billing mode for a group, mirroring the backend
- * freeze-point precedence: group override billing_mode → model tiered_expr →
- * model quota_type (REQUEST → per-request, otherwise per-token).
- */
-export function resolveGroupBillingMode(
-  model: PricingModel,
-  group: string
-): 'per-token' | 'per-request' | 'tiered_expr' {
-  const override = getModelGroupPricingOverride(model, group)
-  const overrideMode = override?.billing_mode
-  if (
-    overrideMode === 'per-token' ||
-    overrideMode === 'per-request' ||
-    overrideMode === 'tiered_expr'
-  ) {
-    return overrideMode
-  }
-  if (model.billing_mode === 'tiered_expr') {
-    return 'tiered_expr'
-  }
-  return model.quota_type === QUOTA_TYPE_VALUES.REQUEST
-    ? 'per-request'
-    : 'per-token'
 }
 
 function getPriceOverride(
@@ -196,7 +173,9 @@ function calculateMinGroupRequestPrice(
       minPrice = price
     }
   }
-  return minPrice === Number.POSITIVE_INFINITY ? model.model_price || 0 : minPrice
+  return minPrice === Number.POSITIVE_INFINITY
+    ? model.model_price || 0
+    : minPrice
 }
 
 /**
@@ -224,17 +203,24 @@ function calculateTokenPrice(
     case 'output':
       return base * model.completion_ratio
     case 'cache':
-      return hasRatio(model.cache_ratio) ? base * Number(model.cache_ratio) : NaN
+      return hasRatio(model.cache_ratio)
+        ? base * Number(model.cache_ratio)
+        : NaN
     case 'create_cache':
       return hasRatio(model.create_cache_ratio)
         ? base * Number(model.create_cache_ratio)
         : NaN
     case 'image':
-      return hasRatio(model.image_ratio) ? base * Number(model.image_ratio) : NaN
+      return hasRatio(model.image_ratio)
+        ? base * Number(model.image_ratio)
+        : NaN
     case 'audio_input':
-      return hasRatio(model.audio_ratio) ? base * Number(model.audio_ratio) : NaN
+      return hasRatio(model.audio_ratio)
+        ? base * Number(model.audio_ratio)
+        : NaN
     case 'audio_output':
-      return hasRatio(model.audio_ratio) && hasRatio(model.audio_completion_ratio)
+      return hasRatio(model.audio_ratio) &&
+        hasRatio(model.audio_completion_ratio)
         ? base *
             Number(model.audio_ratio) *
             Number(model.audio_completion_ratio)
@@ -298,8 +284,7 @@ export function formatPrice(
   usdExchangeRate = 1,
   group?: string
 ): string {
-  const specificGroup =
-    group && group !== FILTER_ALL ? group : undefined
+  const specificGroup = group && group !== FILTER_ALL ? group : undefined
 
   // Respect the group's effective billing mode: a per-request/dynamic group has
   // no token price to show.
@@ -435,8 +420,7 @@ export function formatRequestPrice(
   usdExchangeRate = 1,
   group?: string
 ): string {
-  const specificGroup =
-    group && group !== FILTER_ALL ? group : undefined
+  const specificGroup = group && group !== FILTER_ALL ? group : undefined
 
   if (specificGroup) {
     if (resolveGroupBillingMode(model, specificGroup) !== 'per-request') {

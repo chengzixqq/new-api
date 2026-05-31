@@ -174,13 +174,20 @@ export function usePricingColumns(
 
         const dynamicSummary =
           effectiveMode === 'tiered_expr'
-            ? getDynamicPricingSummary(model, {
-                tokenUnit,
-                showRechargePrice,
-                priceRate,
-                usdExchangeRate,
-                groupRatioMultiplier: getDynamicDisplayGroupRatio(model),
-              })
+            ? getDynamicPricingSummary(
+                model,
+                {
+                  tokenUnit,
+                  showRechargePrice,
+                  priceRate,
+                  usdExchangeRate,
+                  groupRatioMultiplier: getDynamicDisplayGroupRatio(
+                    model,
+                    specificGroup
+                  ),
+                },
+                specificGroup
+              )
             : null
 
         if (dynamicSummary) {
@@ -304,13 +311,20 @@ export function usePricingColumns(
 
         const dynamicSummary =
           effectiveMode === 'tiered_expr'
-            ? getDynamicPricingSummary(model, {
-                tokenUnit,
-                showRechargePrice,
-                priceRate,
-                usdExchangeRate,
-                groupRatioMultiplier: getDynamicDisplayGroupRatio(model),
-              })
+            ? getDynamicPricingSummary(
+                model,
+                {
+                  tokenUnit,
+                  showRechargePrice,
+                  priceRate,
+                  usdExchangeRate,
+                  groupRatioMultiplier: getDynamicDisplayGroupRatio(
+                    model,
+                    specificGroup
+                  ),
+                },
+                specificGroup
+              )
             : null
 
         if (dynamicSummary) {

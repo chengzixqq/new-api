@@ -62,6 +62,7 @@ import {
   isDynamicPricingModel,
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
+import { getGroupDynamicTiers } from '../lib/group-billing'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
 import { inferModelMetadata } from '../lib/model-metadata'
 import {
@@ -80,9 +81,9 @@ import type {
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelDetailsApi, ModelDetailsProviderInfo } from './model-details-api'
 import { ModalityIcons } from './model-details-modalities'
-import { ModelPricingAdminPanel } from './model-pricing-admin'
 import { ModelDetailsPerformance } from './model-details-performance'
 import { ModelDetailsQuickStats } from './model-details-quick-stats'
+import { ModelPricingAdminPanel } from './model-pricing-admin'
 
 // ----------------------------------------------------------------------------
 // Local UI helpers
@@ -632,7 +633,9 @@ function GroupPricingSection(props: {
     return Object.values(props.model.group_pricing || {}).some((item) => {
       if (!item || typeof item !== 'object') return false
       const value = item[key as keyof typeof item]
-      return value !== undefined && value !== null && Number.isFinite(Number(value))
+      return (
+        value !== undefined && value !== null && Number.isFinite(Number(value))
+      )
     })
   }
 
@@ -705,22 +708,6 @@ function GroupPricingSection(props: {
       )
     }
 
-    const priceFields = Array.from(
-      new Map(
-        dynamicTiers
-          .flatMap((tier) =>
-            getDynamicPriceEntries(tier, {
-              tokenUnit: props.tokenUnit,
-              showRechargePrice,
-              priceRate: props.priceRate,
-              usdExchangeRate: props.usdExchangeRate,
-              groupRatioMultiplier: 1,
-            })
-          )
-          .map((entry) => [entry.field, entry])
-      ).values()
-    )
-
     return (
       <section>
         <SectionTitle>{t('Pricing by Group')}</SectionTitle>
@@ -731,6 +718,30 @@ function GroupPricingSection(props: {
               props.model,
               group,
               props.groupRatio
+            )
+            // 按分组解析分级表达式:某分组在 group_pricing 里覆盖了 billing_expr 时,
+            // 必须展开该分组自己的分级价,而非模型级表达式(修复「所见≠所付」)。
+            // 未覆盖的分组回退到模型级表达式,结果与原行为一致。被覆盖成非
+            // tiered_expr(如 per-token)的罕见分组无分级可展开,回退模型级 tiers
+            // 以避免空表,保持与改动前一致、不回退。
+            const groupTiers = getGroupDynamicTiers(props.model, group)
+            const tiersToRender =
+              groupTiers.length > 0 ? groupTiers : dynamicTiers
+            // 表头列同样按分组的实际分级表推导,保证被覆盖分组的列与其行一致。
+            const priceFields = Array.from(
+              new Map(
+                tiersToRender
+                  .flatMap((tier) =>
+                    getDynamicPriceEntries(tier, {
+                      tokenUnit: props.tokenUnit,
+                      showRechargePrice,
+                      priceRate: props.priceRate,
+                      usdExchangeRate: props.usdExchangeRate,
+                      groupRatioMultiplier: 1,
+                    })
+                  )
+                  .map((entry) => [entry.field, entry])
+              ).values()
             )
             return (
               <div key={group} className='overflow-hidden rounded-lg border'>
@@ -756,7 +767,7 @@ function GroupPricingSection(props: {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {dynamicTiers.map((tier, tierIndex) => {
+                      {tiersToRender.map((tier, tierIndex) => {
                         const entries = getDynamicPriceEntries(tier, {
                           tokenUnit: props.tokenUnit,
                           showRechargePrice,
@@ -843,9 +854,7 @@ function GroupPricingSection(props: {
                 props.groupRatio
               )
               const groupMode = resolveGroupBillingMode(props.model, group)
-              const priceColSpan = isTokenBased
-                ? 2 + extraPriceTypes.length
-                : 1
+              const priceColSpan = isTokenBased ? 2 + extraPriceTypes.length : 1
               return (
                 <TableRow key={group}>
                   <TableCell className='py-2.5'>
@@ -994,7 +1003,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
   const user = useAuthStore((state) => state.auth.user)
   const showRechargePrice = props.showRechargePrice ?? false
   const metadata = useMemo(() => inferModelMetadata(props.model), [props.model])
-  const canEditPricing = (user?.role ?? 0) >= ROLE.SUPER_ADMIN
+  const canEditPricing = (user?.role ?? 0) >= ROLE.ADMIN
 
   const isDynamic =
     props.model.billing_mode === 'tiered_expr' &&

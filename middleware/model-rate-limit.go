@@ -20,7 +20,19 @@ import (
 const (
 	ModelRequestRateLimitCountMark        = "MRRL"
 	ModelRequestRateLimitSuccessCountMark = "MRRLS"
+
+	// slidingWindowTotalKeyPrefix 是滑动窗口「总请求计数」在 Redis 中的 key 前缀。
+	// 必须独立于旧令牌桶使用的裸 "rateLimit:<userId>" key：旧桶用 HMSET 把该 key
+	// 写成 hash 且 EXPIRE 被注释（永不过期），滑动窗口对同名 key 做 sorted set 操作
+	// 会触发 WRONGTYPE，导致开启限流后每个请求都 500（rate_limit_check_failed）。
+	slidingWindowTotalKeyPrefix = "rateLimit:sw:"
 )
+
+// slidingWindowTotalKey 构造滑动窗口总请求计数的 Redis key，带独立 "sw:" 段以与
+// 旧令牌桶遗留的裸 key 隔离。抽成函数以便单测锚定该隔离约束。
+func slidingWindowTotalKey(userId string) string {
+	return slidingWindowTotalKeyPrefix + userId
+}
 
 // 检查Redis中的请求限制
 func checkRedisRateLimit(ctx context.Context, rdb *redis.Client, key string, maxCount int, duration int64) (bool, error) {
@@ -100,7 +112,7 @@ func redisRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) g
 		// 改用滑动窗口：保证任意滚动 duration 秒内放行数不超过 totalMaxCount，
 		// 杜绝原令牌桶冷启动满桶 + 每秒回填叠加，导致首个窗口放行量翻倍击穿上游 RPM 的问题。
 		if totalMaxCount > 0 {
-			totalKey := fmt.Sprintf("rateLimit:%s", userId)
+			totalKey := slidingWindowTotalKey(userId)
 			var retryAfter int
 			allowed, retryAfter, err = limiter.SlidingWindowAllow(ctx, rdb, totalKey, totalMaxCount, duration)
 			if err != nil {

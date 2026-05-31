@@ -1,7 +1,6 @@
 package model
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -164,7 +163,7 @@ func parseModelGroupPricing(raw string) map[string]types.ModelGroupPricing {
 	}
 
 	values := make(map[string]types.ModelGroupPricing)
-	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+	if err := common.Unmarshal([]byte(raw), &values); err != nil {
 		return nil
 	}
 
@@ -290,7 +289,7 @@ func NormalizeModelGroupPricing(values map[string]types.ModelGroupPricing) map[s
 
 func ModelGroupPricingJSON(values map[string]types.ModelGroupPricing) (string, error) {
 	cleaned := NormalizeModelGroupPricing(values)
-	raw, err := json.Marshal(cleaned)
+	raw, err := common.Marshal(cleaned)
 	if err != nil {
 		return "", err
 	}
@@ -410,7 +409,7 @@ func updatePricing() {
 			continue
 		}
 		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(meta.Endpoints), &raw); err == nil {
+		if err := common.Unmarshal([]byte(meta.Endpoints), &raw); err == nil {
 			endpoints := make([]string, 0, len(raw))
 			for k, v := range raw {
 				switch v.(type) {
@@ -454,7 +453,7 @@ func updatePricing() {
 			continue
 		}
 		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(meta.Endpoints), &raw); err == nil {
+		if err := common.Unmarshal([]byte(meta.Endpoints), &raw); err == nil {
 			for k, v := range raw {
 				switch val := v.(type) {
 				case string:

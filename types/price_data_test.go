@@ -60,3 +60,23 @@ func TestModelGroupPricingBareRatioStillCompact(t *testing.T) {
 func TestModelGroupPricingEmptyIsEmpty(t *testing.T) {
 	require.True(t, ModelGroupPricing{}.IsEmpty())
 }
+
+// 锁定遗留反序列化：DB 中早期存的「裸数字」必须解回 Ratio（price_data.go 的
+// UnmarshalJSON 先试标量）。本测试是 JSON 包装层迁移（encoding/json → common.*）
+// 的安全网，确保迁移不改变既有存量值的解析。
+func TestModelGroupPricingUnmarshalBareNumberToRatio(t *testing.T) {
+	var item ModelGroupPricing
+	require.NoError(t, json.Unmarshal([]byte("1.25"), &item))
+	require.NotNil(t, item.Ratio)
+	require.Equal(t, 1.25, *item.Ratio)
+	require.False(t, item.HasPriceOverride())
+	require.False(t, item.HasBillingMode())
+}
+
+// 锁定遗留反序列化：JSON null 必须解为空结构体且判定为空（price_data.go 的
+// UnmarshalJSON 对 "null" 的早返回分支）。同为迁移安全网。
+func TestModelGroupPricingUnmarshalNullIsEmpty(t *testing.T) {
+	item := ModelGroupPricing{Ratio: fPtr(9)}
+	require.NoError(t, json.Unmarshal([]byte("null"), &item))
+	require.True(t, item.IsEmpty())
+}

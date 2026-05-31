@@ -136,6 +136,9 @@ func InitOptionMap() {
 	common.OptionMap["ModelRequestRateLimitCount"] = strconv.Itoa(setting.ModelRequestRateLimitCount)
 	common.OptionMap["ModelRequestRateLimitDurationMinutes"] = strconv.Itoa(setting.ModelRequestRateLimitDurationMinutes)
 	common.OptionMap["ModelRequestRateLimitSuccessCount"] = strconv.Itoa(setting.ModelRequestRateLimitSuccessCount)
+	common.OptionMap["ModelRequestRateLimitAdminFollowUser"] = strconv.FormatBool(setting.ModelRequestRateLimitAdminFollowUser)
+	common.OptionMap["ModelRequestRateLimitAdminCount"] = strconv.Itoa(setting.ModelRequestRateLimitAdminCount)
+	common.OptionMap["ModelRequestRateLimitAdminSuccessCount"] = strconv.Itoa(setting.ModelRequestRateLimitAdminSuccessCount)
 	common.OptionMap["ModelRequestRateLimitGroup"] = setting.ModelRequestRateLimitGroup2JSONString()
 	common.OptionMap["ModelRatio"] = ratio_setting.ModelRatio2JSONString()
 	common.OptionMap["ModelPrice"] = ratio_setting.ModelPrice2JSONString()
@@ -275,7 +278,7 @@ func updateOptionMap(key string, value string) (err error) {
 			common.ImageDownloadPermission = intValue
 		}
 	}
-	if strings.HasSuffix(key, "Enabled") || key == "DefaultCollapseSidebar" || key == "DefaultUseAutoGroup" || key == "SMTPForceAuthLogin" {
+	if strings.HasSuffix(key, "Enabled") || key == "DefaultCollapseSidebar" || key == "DefaultUseAutoGroup" || key == "SMTPForceAuthLogin" || key == "ModelRequestRateLimitAdminFollowUser" {
 		boolValue := value == "true"
 		switch key {
 		case "PasswordRegisterEnabled":
@@ -346,6 +349,8 @@ func updateOptionMap(key string, value string) (err error) {
 			setting.CheckSensitiveOnPromptEnabled = boolValue
 		case "ModelRequestRateLimitEnabled":
 			setting.ModelRequestRateLimitEnabled = boolValue
+		case "ModelRequestRateLimitAdminFollowUser":
+			setting.ModelRequestRateLimitAdminFollowUser = boolValue
 		case "StopOnSensitiveEnabled":
 			setting.StopOnSensitiveEnabled = boolValue
 		case "SMTPSSLEnabled":
@@ -510,6 +515,10 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.ModelRequestRateLimitDurationMinutes, _ = strconv.Atoi(value)
 	case "ModelRequestRateLimitSuccessCount":
 		setting.ModelRequestRateLimitSuccessCount, _ = strconv.Atoi(value)
+	case "ModelRequestRateLimitAdminCount":
+		setting.ModelRequestRateLimitAdminCount, _ = strconv.Atoi(value)
+	case "ModelRequestRateLimitAdminSuccessCount":
+		setting.ModelRequestRateLimitAdminSuccessCount, _ = strconv.Atoi(value)
 	case "ModelRequestRateLimitGroup":
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
 	case "RetryTimes":

@@ -16,6 +16,15 @@ var ModelRequestRateLimitSuccessCount = 1000
 var ModelRequestRateLimitGroup = map[string][2]int{}
 var ModelRequestRateLimitMutex sync.RWMutex
 
+// 管理员档限流：当启用模型请求限流时，是否对管理员/超级管理员（role >= RoleAdminUser）单独管控。
+// ModelRequestRateLimitAdminFollowUser = true（默认）：管理员/超管跟随用户限流，行为与原先完全一致。
+// = false：管理员/超管改用下面的管理员档总数/成功数，且不再套用用户档与分组覆盖；
+//
+//	管理员档计数为 0 表示该项不限制（即关闭对管理员/超管的限流，等同豁免）。
+var ModelRequestRateLimitAdminFollowUser = true
+var ModelRequestRateLimitAdminCount = 0
+var ModelRequestRateLimitAdminSuccessCount = 0
+
 func ModelRequestRateLimitGroup2JSONString() string {
 	ModelRequestRateLimitMutex.RLock()
 	defer ModelRequestRateLimitMutex.RUnlock()

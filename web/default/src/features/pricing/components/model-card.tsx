@@ -86,13 +86,20 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const initial = props.model.model_name?.charAt(0).toUpperCase() || '?'
   const hasCachedPrice = isTokenBased && props.model.cache_ratio != null
   const dynamicSummary = isDynamicPricing
-    ? getDynamicPricingSummary(props.model, {
-        tokenUnit,
-        showRechargePrice,
-        priceRate,
-        usdExchangeRate,
-        groupRatioMultiplier: getDynamicDisplayGroupRatio(props.model),
-      })
+    ? getDynamicPricingSummary(
+        props.model,
+        {
+          tokenUnit,
+          showRechargePrice,
+          priceRate,
+          usdExchangeRate,
+          groupRatioMultiplier: getDynamicDisplayGroupRatio(
+            props.model,
+            specificGroup
+          ),
+        },
+        specificGroup
+      )
     : null
 
   const primaryGroup = groups[0]

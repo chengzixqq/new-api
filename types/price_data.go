@@ -1,9 +1,10 @@
 package types
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 type ModelGroupPricing struct {
@@ -38,14 +39,14 @@ func (p *ModelGroupPricing) UnmarshalJSON(data []byte) error {
 	}
 
 	var ratio float64
-	if err := json.Unmarshal(data, &ratio); err == nil {
+	if err := common.Unmarshal(data, &ratio); err == nil {
 		p.Ratio = floatPtr(ratio)
 		return nil
 	}
 
 	type alias ModelGroupPricing
 	var decoded alias
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := common.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	*p = ModelGroupPricing(decoded)
@@ -54,10 +55,10 @@ func (p *ModelGroupPricing) UnmarshalJSON(data []byte) error {
 
 func (p ModelGroupPricing) MarshalJSON() ([]byte, error) {
 	if p.Ratio != nil && !p.HasPriceOverride() && !p.HasBillingMode() {
-		return json.Marshal(*p.Ratio)
+		return common.Marshal(*p.Ratio)
 	}
 	type alias ModelGroupPricing
-	return json.Marshal(alias(p))
+	return common.Marshal(alias(p))
 }
 
 func (p ModelGroupPricing) HasRatio() bool {

@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -40,7 +39,7 @@ type UpdateModelPricingRequest struct {
 }
 
 func writeFloatMapOption(key string, values map[string]float64) error {
-	bytes, err := json.Marshal(values)
+	bytes, err := common.Marshal(values)
 	if err != nil {
 		return err
 	}
@@ -48,7 +47,7 @@ func writeFloatMapOption(key string, values map[string]float64) error {
 }
 
 func writeStringMapOption(key string, values map[string]string) error {
-	bytes, err := json.Marshal(values)
+	bytes, err := common.Marshal(values)
 	if err != nil {
 		return err
 	}
@@ -518,7 +517,7 @@ func enrichModels(models []*model.Model) {
 			mm := models[idx]
 			if mm.Endpoints == "" {
 				eps := model.GetModelSupportEndpointTypes(mm.ModelName)
-				if b, err := json.Marshal(eps); err == nil {
+				if b, err := common.Marshal(eps); err == nil {
 					mm.Endpoints = string(b)
 				}
 			}
@@ -608,7 +607,7 @@ func enrichModels(models []*model.Model) {
 			for et := range es {
 				eps = append(eps, et)
 			}
-			if b, err := json.Marshal(eps); err == nil {
+			if b, err := common.Marshal(eps); err == nil {
 				mm.Endpoints = string(b)
 			}
 		}

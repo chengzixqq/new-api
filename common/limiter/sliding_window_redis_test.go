@@ -109,3 +109,38 @@ func TestSlidingWindowAllow_NeverExceedsLimitUnderConcurrency(t *testing.T) {
 		t.Fatalf("并发放行数=%d，期望恰好 %d（既不超也不少）", allowed, limit)
 	}
 }
+
+// TestSlidingWindowAllow_LegacyTokenBucketHashCollision 复刻 Bug2 的生产现实：
+// 旧令牌桶曾在裸 "rateLimit:<userId>" 上 HMSET 出一个 hash（tokens/last_time）且无 TTL。
+// 它先锚定根因——直接对被 hash 占用的裸 key 跑滑动窗口必然 WRONGTYPE；
+// 再验证修复——middleware 改用的独立 "rateLimit:sw:" 前缀 key 完全不受影响。
+//
+// 注意：前缀字符串与 middleware.slidingWindowTotalKey 必须保持一致（limiter 包不能反向
+// 依赖 middleware，故此处硬编码并以注释约束）。
+func TestSlidingWindowAllow_LegacyTokenBucketHashCollision(t *testing.T) {
+	rdb := dialTestRedis(t)
+	ctx := context.Background()
+	const userId = "9876543"
+	bareKey := "rateLimit:" + userId  // 旧令牌桶遗留的裸 key
+	swKey := "rateLimit:sw:" + userId // 滑动窗口独立 key（须与 middleware.slidingWindowTotalKey 一致）
+	rdb.Del(ctx, bareKey, swKey, swKey+":seq")
+	// 复刻旧桶残留：HMSET hash，且不设 TTL
+	if err := rdb.HSet(ctx, bareKey, "tokens", 2340, "last_time", 1780239204).Err(); err != nil {
+		t.Fatal(err)
+	}
+	defer rdb.Del(ctx, bareKey, swKey, swKey+":seq")
+
+	// 锚定 Bug：对被 hash 占用的裸 key 跑滑动窗口 => 必然 WRONGTYPE
+	if _, _, err := SlidingWindowAllow(ctx, rdb, bareKey, 5, 2); err == nil {
+		t.Fatal("预期裸 key（被旧令牌桶 hash 占用）跑滑动窗口应报 WRONGTYPE，以锚定 Bug2 根因")
+	}
+
+	// 验证修复：独立前缀 key 不受裸 key 类型影响，正常放行
+	allowed, _, err := SlidingWindowAllow(ctx, rdb, swKey, 5, 2)
+	if err != nil {
+		t.Fatalf("独立前缀 key 不应受旧令牌桶 hash 影响，却报错: %v", err)
+	}
+	if !allowed {
+		t.Fatal("首个请求应放行")
+	}
+}

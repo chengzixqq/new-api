@@ -90,23 +90,18 @@ func redisRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) g
 			return
 		}
 		if !allowed {
+			c.Header("Retry-After", strconv.Itoa(int(duration)))
 			abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到请求数限制：%d分钟内最多请求%d次", setting.ModelRequestRateLimitDurationMinutes, successMaxCount))
 			return
 		}
 
-		//2.检查总请求数限制并记录总请求（当totalMaxCount为0时会自动跳过，使用令牌桶限流器
+		// 2. 检查总请求数限制（当totalMaxCount为0时不限制）。
+		// 改用滑动窗口：保证任意滚动 duration 秒内放行数不超过 totalMaxCount，
+		// 杜绝原令牌桶冷启动满桶 + 每秒回填叠加，导致首个窗口放行量翻倍击穿上游 RPM 的问题。
 		if totalMaxCount > 0 {
 			totalKey := fmt.Sprintf("rateLimit:%s", userId)
-			// 初始化
-			tb := limiter.New(ctx, rdb)
-			allowed, err = tb.Allow(
-				ctx,
-				totalKey,
-				limiter.WithCapacity(int64(totalMaxCount)*duration),
-				limiter.WithRate(int64(totalMaxCount)),
-				limiter.WithRequested(duration),
-			)
-
+			var retryAfter int
+			allowed, retryAfter, err = limiter.SlidingWindowAllow(ctx, rdb, totalKey, totalMaxCount, duration)
 			if err != nil {
 				fmt.Println("检查总请求数限制失败:", err.Error())
 				abortWithOpenAiMessage(c, http.StatusInternalServerError, "rate_limit_check_failed")
@@ -114,7 +109,9 @@ func redisRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) g
 			}
 
 			if !allowed {
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
 				abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到总请求数限制：%d分钟内最多请求%d次，包括失败次数，请检查您的请求是否正确", setting.ModelRequestRateLimitDurationMinutes, totalMaxCount))
+				return
 			}
 		}
 
@@ -137,19 +134,21 @@ func memoryRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) 
 		totalKey := ModelRequestRateLimitCountMark + userId
 		successKey := ModelRequestRateLimitSuccessCountMark + userId
 
-		// 1. 检查总请求数限制（当totalMaxCount为0时跳过）
+		// 1. 检查总请求数限制（当totalMaxCount为0时跳过）。
+		// InMemoryRateLimiter 本身即滑动窗口硬上限，这里仅补齐 Retry-After 头与结构化错误体，
+		// 与 Redis 路径保持一致，便于客户端按提示退避。
 		if totalMaxCount > 0 && !inMemoryRateLimiter.Request(totalKey, totalMaxCount, duration) {
-			c.Status(http.StatusTooManyRequests)
-			c.Abort()
+			c.Header("Retry-After", strconv.Itoa(int(duration)))
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到总请求数限制：%d分钟内最多请求%d次，包括失败次数，请检查您的请求是否正确", setting.ModelRequestRateLimitDurationMinutes, totalMaxCount))
 			return
 		}
 
-		// 2. 检查成功请求数限制
-		// 使用一个临时key来检查限制，这样可以避免实际记录
-		checkKey := successKey + "_check"
-		if !inMemoryRateLimiter.Request(checkKey, successMaxCount, duration) {
-			c.Status(http.StatusTooManyRequests)
-			c.Abort()
+		// 2. 检查成功请求数限制（只读检查，不记录；放行且成功后才在下方记录到 successKey）。
+		// 与 Redis 路径一致采用 check-then-act：原先用影子 key successKey+"_check" 做 Request 预检，
+		// 会把失败请求也计入，导致 _check 与 successKey 两个计数器漂移、提前误拒，此处改为只读 Check 修正。
+		if !inMemoryRateLimiter.Check(successKey, successMaxCount, duration) {
+			c.Header("Retry-After", strconv.Itoa(int(duration)))
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到请求数限制：%d分钟内最多请求%d次", setting.ModelRequestRateLimitDurationMinutes, successMaxCount))
 			return
 		}
 

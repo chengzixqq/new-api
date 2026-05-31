@@ -63,6 +63,12 @@ func CheckModelRequestRateLimitGroup(jsonStr string) error {
 		if limits[0] > math.MaxInt32 || limits[1] > math.MaxInt32 {
 			return fmt.Errorf("group %s [%d, %d] has max rate limits value 2147483647", group, limits[0], limits[1])
 		}
+		// 总请求数 limits[0] 是保护上游 RPM 的硬上限闸；成功请求数 limits[1] 应 >= 总数。
+		// 若成功数 < 总数，成功数会成为主约束，而成功数走 check-then-act 路径存在竞态、精确性下降，
+		// 多半是把两个值写反的误配。仅告警不阻断（允许有意为之的特殊配置）。
+		if limits[0] > 0 && limits[1] < limits[0] {
+			common.SysLog(fmt.Sprintf("warning: 分组 %s 的请求限流配置 成功数(%d) 小于 总数(%d)，建议成功数 >= 总数，否则成功数限制可能因并发竞态而不精确", group, limits[1], limits[0]))
+		}
 	}
 
 	return nil

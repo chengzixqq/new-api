@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/common/limiter"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 
 	"github.com/gin-gonic/gin"
@@ -162,6 +163,25 @@ func memoryRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) 
 	}
 }
 
+// rateLimitTier 表示一次请求最终采用的限流档位。
+type rateLimitTier struct {
+	totalMaxCount   int
+	successMaxCount int
+	isAdminTier     bool // true=采用了管理员档（不再套用用户档与分组覆盖）
+}
+
+// resolveAdminTier 决定是否对当前请求采用管理员档。抽成纯函数以便单测，
+// 不依赖 gin.Context / DB / 全局配置。
+//   - followUser=true（默认）：管理员跟随用户限流，返回 isAdminTier=false，由调用方走用户档+分组覆盖。
+//   - followUser=false 且 isAdmin=true：采用管理员档（adminTotal/adminSuccess），计数 0 表示该项不限制。
+//   - followUser=false 且 isAdmin=false：普通用户，返回 isAdminTier=false。
+func resolveAdminTier(followUser, isAdmin bool, adminTotal, adminSuccess int) rateLimitTier {
+	if followUser || !isAdmin {
+		return rateLimitTier{isAdminTier: false}
+	}
+	return rateLimitTier{totalMaxCount: adminTotal, successMaxCount: adminSuccess, isAdminTier: true}
+}
+
 // ModelRequestRateLimit 模型请求限流中间件
 func ModelRequestRateLimit() func(c *gin.Context) {
 	return func(c *gin.Context) {
@@ -173,6 +193,24 @@ func ModelRequestRateLimit() func(c *gin.Context) {
 
 		// 计算限流参数
 		duration := int64(setting.ModelRequestRateLimitDurationMinutes * 60)
+
+		// 管理员/超级管理员档：当关闭"跟随用户限速"时，管理员/超管（role >= RoleAdminUser）单独管控，
+		// 直接使用管理员档总数/成功数，且不套用下方的用户档与分组覆盖。
+		// 管理员档计数为 0 表示该项不限制（对管理员/超管豁免）。
+		// 注意：中继链路走 TokenAuth，context 里没有 role，需按 userId 查角色；
+		// 仅在"关闭跟随"时才查（绝大多数部署默认 true，直接短路，零额外开销）。
+		if !setting.ModelRequestRateLimitAdminFollowUser {
+			isAdmin := model.IsAdmin(c.GetInt("id"))
+			if tier := resolveAdminTier(false, isAdmin, setting.ModelRequestRateLimitAdminCount, setting.ModelRequestRateLimitAdminSuccessCount); tier.isAdminTier {
+				if common.RedisEnabled {
+					redisRateLimitHandler(duration, tier.totalMaxCount, tier.successMaxCount)(c)
+				} else {
+					memoryRateLimitHandler(duration, tier.totalMaxCount, tier.successMaxCount)(c)
+				}
+				return
+			}
+		}
+
 		totalMaxCount := setting.ModelRequestRateLimitCount
 		successMaxCount := setting.ModelRequestRateLimitSuccessCount
 

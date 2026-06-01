@@ -1788,7 +1788,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相关项目",
     "footer.defaultCopyright": "版权所有。",
-    "footer.new\u0061pi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
+    "footer.newapi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "对于 2025 年 5 月 10 日之后添加的渠道，在部署时无需从模型名称中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "对于私有部署，格式为：https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "强制返回语法合法的 JSON",
@@ -2919,6 +2919,7 @@
     "Performance Settings": "性能设置",
     "Period": "时间范围",
     "Periodically check for upstream model changes": "定期检查上游模型是否有变更",
+    "Periodically warm TCP/TLS/HTTP2 connections to this channel upstream to reduce real request TTFB; non-billable, failures are logged only, and only this channel is affected.": "定时预热到该渠道上游的 TCP/TLS/HTTP2 连接，降低真实请求首字节延迟；不计费、失败仅记日志，仅对该渠道生效。",
     "Periodically send ping frames to keep streaming connections active.": "定期发送 ping 帧以保持流连接处于活动状态。",
     "Permanently delete your account and all data": "永久删除您的帐户和所有数据",
     "Permit Passkey registration on non-HTTPS origins (only recommended for development)": "允许在非 HTTPS 源上注册通行密钥（仅建议用于开发）",
@@ -4232,6 +4233,7 @@
     "Upload photo": "上传照片",
     "Upscale": "放大",
     "Upstream": "上游",
+    "Upstream connection warmup": "上游连接预热",
     "Upstream Model Detection Settings": "检测上游模型设置",
     "Upstream Model Update Check": "上游模型更新检查",
     "Upstream Model Updates": "上游模型更新",
@@ -4538,6 +4540,15 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Channel-level switches decide which upstream hosts are warmed.": "渠道级开关决定预热哪些上游主机。",
+    "Enable upstream warmup task": "启用上游预热任务",
+    "Failure": "失败",
+    "Keep selected channel upstream connections ready with non-billable health requests.": "使用不计费健康请求保持已选择渠道的上游连接就绪。",
+    "Last Check": "最后检查",
+    "Last Success": "最后成功",
+    "No warmup status yet": "暂无预热状态",
+    "Refresh Status": "刷新状态",
+    "Warmup host status": "预热主机状态"
   }
 }

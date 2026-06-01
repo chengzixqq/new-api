@@ -211,6 +211,7 @@ const EditChannelModal = (props) => {
     allow_speed: false,
     claude_beta_query: false,
     cowork_adaptive_thinking_fix: false,
+    upstream_warmup_enabled: false,
     upstream_model_update_check_enabled: false,
     upstream_model_update_auto_sync_enabled: false,
     upstream_model_update_last_check_time: 0,
@@ -914,6 +915,8 @@ const EditChannelModal = (props) => {
           data.claude_beta_query = parsedSettings.claude_beta_query || false;
           data.cowork_adaptive_thinking_fix =
             parsedSettings.cowork_adaptive_thinking_fix || false;
+          data.upstream_warmup_enabled =
+            parsedSettings.upstream_warmup_enabled === true;
           data.upstream_model_update_check_enabled =
             parsedSettings.upstream_model_update_check_enabled === true;
           data.upstream_model_update_auto_sync_enabled =
@@ -945,6 +948,7 @@ const EditChannelModal = (props) => {
           data.allow_speed = false;
           data.claude_beta_query = false;
           data.cowork_adaptive_thinking_fix = false;
+          data.upstream_warmup_enabled = false;
           data.upstream_model_update_check_enabled = false;
           data.upstream_model_update_auto_sync_enabled = false;
           data.upstream_model_update_last_check_time = 0;
@@ -964,6 +968,7 @@ const EditChannelModal = (props) => {
         data.allow_speed = false;
         data.claude_beta_query = false;
         data.cowork_adaptive_thinking_fix = false;
+        data.upstream_warmup_enabled = false;
         data.upstream_model_update_check_enabled = false;
         data.upstream_model_update_auto_sync_enabled = false;
         data.upstream_model_update_last_check_time = 0;
@@ -1043,6 +1048,7 @@ const EditChannelModal = (props) => {
         data.force_format ||
         data.claude_beta_query ||
         data.cowork_adaptive_thinking_fix ||
+        data.upstream_warmup_enabled ||
         data.system_prompt_override;
       if (hasAdvancedValues) {
         setAdvancedSettingsOpen(true);
@@ -1814,6 +1820,9 @@ const EditChannelModal = (props) => {
       delete settings.cowork_adaptive_thinking_fix;
     }
 
+    settings.upstream_warmup_enabled =
+      localInputs.upstream_warmup_enabled === true;
+
     settings.upstream_model_update_check_enabled =
       localInputs.upstream_model_update_check_enabled === true;
     settings.upstream_model_update_auto_sync_enabled =
@@ -1860,6 +1869,7 @@ const EditChannelModal = (props) => {
     delete localInputs.allow_speed;
     delete localInputs.claude_beta_query;
     delete localInputs.cowork_adaptive_thinking_fix;
+    delete localInputs.upstream_warmup_enabled;
     delete localInputs.upstream_model_update_check_enabled;
     delete localInputs.upstream_model_update_auto_sync_enabled;
     delete localInputs.upstream_model_update_last_check_time;
@@ -2531,6 +2541,8 @@ const EditChannelModal = (props) => {
                   {inputs.type === 14 && (
                     <Form.Switch field='claude_beta_query' label={t('Claude 强制 beta=true')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('claude_beta_query', value)} extraText={t('开启后，该渠道请求 Claude 时将强制追加 ?beta=true（无需客户端手动传参）')} />
                   )}
+
+                  <Form.Switch field='upstream_warmup_enabled' label={t('上游连接预热')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('upstream_warmup_enabled', value)} extraText={t('定时预热到该渠道上游的 TCP/TLS/HTTP2 连接，降低真实请求首字节延迟；不计费、失败仅记日志，仅对该渠道生效。')} />
 
                   {inputs.type === 1 && (
                     <Form.Switch field='force_format' label={t('强制格式化')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelSettingsChange('force_format', value)} extraText={t('强制将响应格式化为 OpenAI 标准格式（只适用于OpenAI渠道类型）')} />

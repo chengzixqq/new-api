@@ -97,6 +97,8 @@ func main() {
 		go model.SyncChannelCache(common.SyncFrequency)
 	}
 
+	service.StartUpstreamWarmupTask()
+
 	// 热更新配置
 	go model.SyncOptions(common.SyncFrequency)
 

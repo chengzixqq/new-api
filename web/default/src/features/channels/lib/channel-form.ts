@@ -196,6 +196,7 @@ export const channelFormSchema = z
     allow_speed: z.boolean().optional(), // Anthropic: speed mode control
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     cowork_adaptive_thinking_fix: z.boolean().optional(), // Anthropic: Cowork adaptive thinking signature fix
+    upstream_warmup_enabled: z.boolean().optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
@@ -315,6 +316,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   allow_speed: false,
   claude_beta_query: false,
   cowork_adaptive_thinking_fix: false,
+  upstream_warmup_enabled: false,
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -370,6 +372,7 @@ export function transformChannelToFormDefaults(
   let allowSpeed = false
   let claudeBetaQuery = false
   let coworkAdaptiveThinkingFix = false
+  let upstreamWarmupEnabled = false
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
@@ -389,6 +392,7 @@ export function transformChannelToFormDefaults(
       allowSpeed = parsed.allow_speed === true
       claudeBetaQuery = parsed.claude_beta_query === true
       coworkAdaptiveThinkingFix = parsed.cowork_adaptive_thinking_fix === true
+      upstreamWarmupEnabled = parsed.upstream_warmup_enabled === true
       upstreamModelUpdateCheckEnabled =
         parsed.upstream_model_update_check_enabled === true
       upstreamModelUpdateAutoSyncEnabled =
@@ -444,6 +448,7 @@ export function transformChannelToFormDefaults(
     allow_speed: allowSpeed,
     claude_beta_query: claudeBetaQuery,
     cowork_adaptive_thinking_fix: coworkAdaptiveThinkingFix,
+    upstream_warmup_enabled: upstreamWarmupEnabled,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
@@ -549,6 +554,9 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     if ('cowork_adaptive_thinking_fix' in settingsObj)
       delete settingsObj.cowork_adaptive_thinking_fix
   }
+
+  settingsObj.upstream_warmup_enabled =
+    formData.upstream_warmup_enabled === true
 
   // Upstream model update settings (for model-fetchable channel types)
   if (MODEL_FETCHABLE_TYPES.has(formData.type)) {

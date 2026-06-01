@@ -220,6 +220,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.system_prompt_override ||
     values.claude_beta_query ||
     values.cowork_adaptive_thinking_fix ||
+    values.upstream_warmup_enabled ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
     values.upstream_model_update_ignored_models?.trim()
@@ -3145,6 +3146,33 @@ export function ChannelMutateDrawer({
                           </div>
                         </div>
                       )}
+
+                      <div className='divide-border space-y-0 divide-y border-y'>
+                        <FormField
+                          control={form.control}
+                          name='upstream_warmup_enabled'
+                          render={({ field }) => (
+                            <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                              <div className='space-y-0.5'>
+                                <FormLabel className='text-sm'>
+                                  {t('Upstream connection warmup')}
+                                </FormLabel>
+                                <FormDescription>
+                                  {t(
+                                    'Periodically warm TCP/TLS/HTTP2 connections to this channel upstream to reduce real request TTFB; non-billable, failures are logged only, and only this channel is affected.'
+                                  )}
+                                </FormDescription>
+                              </div>
+                              <FormControl>
+                                <Switch
+                                  checked={field.value}
+                                  onCheckedChange={field.onChange}
+                                />
+                              </FormControl>
+                            </FormItem>
+                          )}
+                        />
+                      </div>
 
                       <div className='divide-border space-y-0 divide-y border-y'>
                         {currentType === 1 && (

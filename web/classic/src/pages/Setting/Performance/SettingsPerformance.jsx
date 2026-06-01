@@ -58,6 +58,11 @@ function formatBytes(bytes, decimals = 2) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
+function formatUnixTime(seconds) {
+  if (!seconds) return '-';
+  return new Date(seconds * 1000).toLocaleString();
+}
+
 export default function SettingsPerformance(props) {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
@@ -72,6 +77,7 @@ export default function SettingsPerformance(props) {
     'performance_setting.monitor_cpu_threshold': 90,
     'performance_setting.monitor_memory_threshold': 90,
     'performance_setting.monitor_disk_threshold': 95,
+    UpstreamWarmupEnabled: true,
   });
   const refForm = useRef();
   const [inputsRow, setInputsRow] = useState(inputs);
@@ -79,6 +85,8 @@ export default function SettingsPerformance(props) {
   const [logCleanupMode, setLogCleanupMode] = useState('by_count');
   const [logCleanupValue, setLogCleanupValue] = useState(10);
   const [logCleanupLoading, setLogCleanupLoading] = useState(false);
+  const [warmupStatus, setWarmupStatus] = useState([]);
+  const [warmupLoading, setWarmupLoading] = useState(false);
 
   function handleFieldChange(fieldName) {
     return (value) => {
@@ -185,6 +193,20 @@ export default function SettingsPerformance(props) {
     }
   }
 
+  async function fetchWarmupStatus() {
+    setWarmupLoading(true);
+    try {
+      const res = await API.get('/api/channel/upstream_warmup/status');
+      if (res.data.success) {
+        setWarmupStatus(Array.isArray(res.data.data) ? res.data.data : []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch upstream warmup status:', error);
+    } finally {
+      setWarmupLoading(false);
+    }
+  }
+
   async function cleanupLogFiles() {
     if (logCleanupValue == null || isNaN(logCleanupValue) || logCleanupValue < 1) {
       showError(t('请输入有效的数值'));
@@ -235,6 +257,7 @@ export default function SettingsPerformance(props) {
     }
     fetchStats();
     fetchLogInfo();
+    fetchWarmupStatus();
   }, [props.options]);
 
   const diskCacheUsagePercent =
@@ -394,6 +417,166 @@ export default function SettingsPerformance(props) {
                 {t('保存性能设置')}
               </Button>
             </Row>
+          </Form.Section>
+
+          <Form.Section text={t('上游连接预热')}>
+            <Banner
+              type='info'
+              description={t(
+                '定时预热已勾选渠道的上游连接，使用不计费健康请求，降低真实请求首字节延迟。',
+              )}
+              style={{ marginBottom: 16 }}
+            />
+            <Row gutter={16}>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.Switch
+                  field={'UpstreamWarmupEnabled'}
+                  label={t('启用上游连接预热任务')}
+                  extraText={t('具体预热哪些上游由渠道高级设置决定')}
+                  size='default'
+                  checkedText='｜'
+                  uncheckedText='〇'
+                  onChange={handleFieldChange('UpstreamWarmupEnabled')}
+                />
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <div style={{ marginTop: 28 }}>
+                  <Button size='default' onClick={onSubmit}>
+                    {t('保存预热设置')}
+                  </Button>
+                </div>
+              </Col>
+            </Row>
+            <div
+              style={{
+                marginTop: 16,
+                padding: 16,
+                border: '1px solid var(--semi-color-border)',
+                borderRadius: 8,
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 8,
+                  flexWrap: 'wrap',
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <Text strong>{t('预热主机状态')}</Text>
+                  <Tag color={inputs.UpstreamWarmupEnabled ? 'green' : 'grey'}>
+                    {inputs.UpstreamWarmupEnabled ? t('已启用') : t('已禁用')}
+                  </Tag>
+                </div>
+                <Button
+                  size='small'
+                  onClick={fetchWarmupStatus}
+                  loading={warmupLoading}
+                >
+                  {t('刷新预热状态')}
+                </Button>
+              </div>
+              {warmupStatus.length > 0 ? (
+                <Row gutter={[16, 16]}>
+                  {warmupStatus.map((item) => {
+                    const ok = item.last_check_at > 0 && !item.last_error;
+                    return (
+                      <Col
+                        key={`${item.host}|${item.proxy || ''}`}
+                        xs={24}
+                        md={12}
+                      >
+                        <div
+                          style={{
+                            border: '1px solid var(--semi-color-border)',
+                            borderRadius: 8,
+                            padding: 12,
+                            minHeight: 148,
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              gap: 8,
+                              marginBottom: 8,
+                            }}
+                          >
+                            <div style={{ minWidth: 0 }}>
+                              <Text
+                                strong
+                                ellipsis={{ showTooltip: true }}
+                                style={{ display: 'block' }}
+                              >
+                                {item.host}
+                              </Text>
+                              {item.proxy ? (
+                                <Text
+                                  type='tertiary'
+                                  ellipsis={{ showTooltip: true }}
+                                  style={{ display: 'block' }}
+                                >
+                                  {item.proxy}
+                                </Text>
+                              ) : null}
+                            </div>
+                            <Tag color={ok ? 'green' : 'red'}>
+                              {ok ? t('正常') : t('失败')}
+                            </Tag>
+                          </div>
+                          <Descriptions
+                            data={[
+                              {
+                                key: t('状态码'),
+                                value: item.last_status_code || '-',
+                              },
+                              {
+                                key: t('延迟'),
+                                value: `${item.last_latency_ms || 0} ms`,
+                              },
+                              {
+                                key: t('成功次数'),
+                                value: item.success_count,
+                              },
+                              {
+                                key: t('失败次数'),
+                                value: item.failure_count,
+                              },
+                              {
+                                key: t('最后检查'),
+                                value: formatUnixTime(item.last_check_at),
+                              },
+                              {
+                                key: t('最后成功'),
+                                value: formatUnixTime(item.last_success_at),
+                              },
+                            ]}
+                          />
+                          {item.last_error ? (
+                            <Text
+                              type='danger'
+                              size='small'
+                              style={{
+                                display: 'block',
+                                marginTop: 8,
+                                wordBreak: 'break-all',
+                              }}
+                            >
+                              {item.last_error}
+                            </Text>
+                          ) : null}
+                        </div>
+                      </Col>
+                    );
+                  })}
+                </Row>
+              ) : (
+                <Text type='tertiary'>{t('暂无预热状态')}</Text>
+              )}
+            </div>
           </Form.Section>
         </Form>
       </Spin>

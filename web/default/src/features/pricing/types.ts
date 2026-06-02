@@ -51,6 +51,8 @@ export type PricingModel = {
   key?: string
   group_ratio?: Record<string, number>
   group_pricing?: Record<string, ModelGroupPricingItem>
+  /** 模型级最低费用（美元/次），用于编辑器回填 */
+  model_min_fee?: number
   /** Billing mode (e.g. "tiered_expr") used to flag dynamic pricing */
   billing_mode?: string
   /** Raw expression describing dynamic / tiered billing */
@@ -85,6 +87,7 @@ export type ModelGroupPricingOverride = {
   image_price?: number | null
   audio_price?: number | null
   audio_completion_price?: number | null
+  min_fee?: number | null
 }
 
 export type ModelGroupPricingItem = number | ModelGroupPricingOverride

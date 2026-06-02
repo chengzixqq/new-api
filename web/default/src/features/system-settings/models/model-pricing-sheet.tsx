@@ -84,6 +84,7 @@ const createModelPricingSchema = (t: (key: string) => string) =>
     imageRatio: z.string().optional(),
     audioRatio: z.string().optional(),
     audioCompletionRatio: z.string().optional(),
+    minFee: z.string().optional(),
   })
 
 type ModelPricingFormValues = z.infer<
@@ -109,6 +110,7 @@ export type ModelRatioData = {
   imageRatio?: string
   audioRatio?: string
   audioCompletionRatio?: string
+  minFee?: string
   billingMode?: PricingMode
   billingExpr?: string
   requestRuleExpr?: string
@@ -449,6 +451,7 @@ export function ModelPricingEditorPanel({
       imageRatio: '',
       audioRatio: '',
       audioCompletionRatio: '',
+      minFee: '',
     },
   })
 
@@ -466,6 +469,7 @@ export function ModelPricingEditorPanel({
         imageRatio: editData.imageRatio || '',
         audioRatio: editData.audioRatio || '',
         audioCompletionRatio: editData.audioCompletionRatio || '',
+        minFee: editData.minFee || '',
       })
       setPricingMode(
         editData.billingMode === 'tiered_expr'
@@ -487,6 +491,7 @@ export function ModelPricingEditorPanel({
         imageRatio: '',
         audioRatio: '',
         audioCompletionRatio: '',
+        minFee: '',
       })
       setPricingMode('per-token')
       setBillingExpr('')
@@ -725,6 +730,7 @@ export function ModelPricingEditorPanel({
       imageRatio: values.imageRatio || '',
       audioRatio: values.audioRatio || '',
       audioCompletionRatio: values.audioCompletionRatio || '',
+      minFee: values.minFee || '',
     }
 
     if (pricingMode === 'tiered_expr') {
@@ -856,6 +862,41 @@ export function ModelPricingEditorPanel({
                         )
                       })}
                     </div>
+
+                    <FormField
+                      control={form.control}
+                      name='minFee'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Min fee')}</FormLabel>
+                          <FormControl>
+                            <InputGroup>
+                              <InputGroupAddon>$</InputGroupAddon>
+                              <InputGroupInput
+                                inputMode='decimal'
+                                placeholder='0.05'
+                                {...field}
+                                onChange={(event) => {
+                                  const value = event.target.value
+                                  if (numericDraftRegex.test(value)) {
+                                    field.onChange(value)
+                                  }
+                                }}
+                              />
+                              <InputGroupAddon align='inline-end'>
+                                {t('per request')}
+                              </InputGroupAddon>
+                            </InputGroup>
+                          </FormControl>
+                          <FormDescription>
+                            {t(
+                              'Minimum charge per request; leave empty for none.'
+                            )}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
                   </FieldGroup>
                 </TabsContent>
 

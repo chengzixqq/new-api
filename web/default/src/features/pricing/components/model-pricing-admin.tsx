@@ -94,6 +94,7 @@ function modelToPricingData(model: PricingModel): ModelRatioData {
     imageRatio: formatDraft(model.image_ratio),
     audioRatio: formatDraft(model.audio_ratio),
     audioCompletionRatio: formatDraft(model.audio_completion_ratio),
+    minFee: formatDraft(model.model_min_fee),
   }
 }
 
@@ -278,6 +279,7 @@ function pricingDataToPayload(data: ModelRatioData): UpdateModelPricingPayload {
     image_ratio: parseOptionalNumber(data.imageRatio),
     audio_ratio: parseOptionalNumber(data.audioRatio),
     audio_completion_ratio: parseOptionalNumber(data.audioCompletionRatio),
+    min_fee: parseOptionalNumber(data.minFee),
   }
 }
 

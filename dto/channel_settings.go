@@ -34,7 +34,9 @@ type ChannelOtherSettings struct {
 	// 是否启用 Cowork/Claude Desktop adaptive thinking 历史签名修复
 	CoworkAdaptiveThinkingFix bool `json:"cowork_adaptive_thinking_fix,omitempty"`
 	// 是否对该渠道启用上游连接预热（进程内定时预热 TCP/TLS/HTTP2 连接，降低首字节延迟）
-	UpstreamWarmupEnabled                 bool       `json:"upstream_warmup_enabled,omitempty"`
+	UpstreamWarmupEnabled bool `json:"upstream_warmup_enabled,omitempty"`
+	// 是否对该渠道启用上游请求 httptrace 分段埋点（语义 B：即使全局开关关闭也对该渠道采集）
+	UpstreamTraceEnabled                  bool       `json:"upstream_trace_enabled,omitempty"`
 	AllowSafetyIdentifier                 bool       `json:"allow_safety_identifier,omitempty"`   // 是否允许 safety_identifier 透传（默认过滤以保护用户隐私）
 	DisableStore                          bool       `json:"disable_store,omitempty"`             // 是否禁用 store 透传（默认允许透传，禁用后可能导致 Codex 无法使用）
 	AllowIncludeObfuscation               bool       `json:"allow_include_obfuscation,omitempty"` // 是否允许 stream_options.include_obfuscation 透传（默认过滤以避免关闭流混淆保护）

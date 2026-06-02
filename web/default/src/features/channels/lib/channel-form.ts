@@ -197,6 +197,7 @@ export const channelFormSchema = z
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     cowork_adaptive_thinking_fix: z.boolean().optional(), // Anthropic: Cowork adaptive thinking signature fix
     upstream_warmup_enabled: z.boolean().optional(),
+    upstream_trace_enabled: z.boolean().optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
@@ -317,6 +318,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   claude_beta_query: false,
   cowork_adaptive_thinking_fix: false,
   upstream_warmup_enabled: false,
+  upstream_trace_enabled: false,
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -373,6 +375,7 @@ export function transformChannelToFormDefaults(
   let claudeBetaQuery = false
   let coworkAdaptiveThinkingFix = false
   let upstreamWarmupEnabled = false
+  let upstreamTraceEnabled = false
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
@@ -393,6 +396,7 @@ export function transformChannelToFormDefaults(
       claudeBetaQuery = parsed.claude_beta_query === true
       coworkAdaptiveThinkingFix = parsed.cowork_adaptive_thinking_fix === true
       upstreamWarmupEnabled = parsed.upstream_warmup_enabled === true
+      upstreamTraceEnabled = parsed.upstream_trace_enabled === true
       upstreamModelUpdateCheckEnabled =
         parsed.upstream_model_update_check_enabled === true
       upstreamModelUpdateAutoSyncEnabled =
@@ -449,6 +453,7 @@ export function transformChannelToFormDefaults(
     claude_beta_query: claudeBetaQuery,
     cowork_adaptive_thinking_fix: coworkAdaptiveThinkingFix,
     upstream_warmup_enabled: upstreamWarmupEnabled,
+    upstream_trace_enabled: upstreamTraceEnabled,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
@@ -557,6 +562,8 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
 
   settingsObj.upstream_warmup_enabled =
     formData.upstream_warmup_enabled === true
+
+  settingsObj.upstream_trace_enabled = formData.upstream_trace_enabled === true
 
   // Upstream model update settings (for model-fetchable channel types)
   if (MODEL_FETCHABLE_TYPES.has(formData.type)) {

@@ -80,6 +80,8 @@ import { safeNumberFieldProps } from '../utils/numeric-field'
  */
 const perfSchema = z.object({
   UpstreamWarmupEnabled: z.boolean(),
+  UpstreamTraceEnabled: z.boolean(),
+  UpstreamTraceSampleRate: z.coerce.number().min(0).max(1),
   performance_setting: z.object({
     disk_cache_enabled: z.boolean(),
     disk_cache_threshold_mb: z.coerce.number().min(1),
@@ -103,6 +105,8 @@ type PerfFormValues = z.output<typeof perfSchema>
 
 type FlatPerfDefaults = {
   UpstreamWarmupEnabled: boolean
+  UpstreamTraceEnabled: boolean
+  UpstreamTraceSampleRate: number
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number
@@ -119,6 +123,8 @@ type FlatPerfDefaults = {
 
 const buildFormDefaults = (defaults: FlatPerfDefaults): PerfFormInput => ({
   UpstreamWarmupEnabled: defaults.UpstreamWarmupEnabled,
+  UpstreamTraceEnabled: defaults.UpstreamTraceEnabled,
+  UpstreamTraceSampleRate: defaults.UpstreamTraceSampleRate,
   performance_setting: {
     disk_cache_enabled: defaults['performance_setting.disk_cache_enabled'],
     disk_cache_threshold_mb:
@@ -144,6 +150,8 @@ const buildFormDefaults = (defaults: FlatPerfDefaults): PerfFormInput => ({
 
 const normalizeFormValues = (values: PerfFormValues): FlatPerfDefaults => ({
   UpstreamWarmupEnabled: values.UpstreamWarmupEnabled,
+  UpstreamTraceEnabled: values.UpstreamTraceEnabled,
+  UpstreamTraceSampleRate: values.UpstreamTraceSampleRate,
   'performance_setting.disk_cache_enabled':
     values.performance_setting.disk_cache_enabled,
   'performance_setting.disk_cache_threshold_mb':
@@ -240,6 +248,10 @@ type WarmupHostStatus = {
   failure_count: number
   last_success_at?: number
   last_check_at: number
+  connect_success_count?: number
+  reusable_success_count?: number
+  drain_failure_count?: number
+  last_reusable_at?: number
 }
 
 export function PerformanceSection(props: Props) {
@@ -407,6 +419,7 @@ export function PerformanceSection(props: Props) {
   const diskEnabled = form.watch('performance_setting.disk_cache_enabled')
   const monitorEnabled = form.watch('performance_setting.monitor_enabled')
   const upstreamWarmupEnabled = form.watch('UpstreamWarmupEnabled')
+  const upstreamTraceEnabled = form.watch('UpstreamTraceEnabled')
   const perfMetricsEnabled = form.watch('perf_metrics_setting.enabled')
   const maxCacheSizeRaw = form.watch(
     'performance_setting.disk_cache_max_size_mb'
@@ -813,7 +826,38 @@ export function PerformanceSection(props: Props) {
             {warmupStatus.length > 0 ? (
               <div className='grid grid-cols-1 gap-3 lg:grid-cols-2'>
                 {warmupStatus.map((item) => {
-                  const ok = item.last_check_at > 0 && !item.last_error
+                  const lastCheckAt = item.last_check_at ?? 0
+                  const lastReusableAt =
+                    item.last_reusable_at ?? item.last_success_at ?? 0
+                  const connectSuccessCount =
+                    item.connect_success_count ?? item.success_count ?? 0
+                  const reusableSuccessCount =
+                    item.reusable_success_count ?? item.success_count ?? 0
+                  const drainFailureCount = item.drain_failure_count ?? 0
+                  const latestHasError = Boolean(item.last_error)
+                  const reusable =
+                    reusableSuccessCount > 0 &&
+                    lastReusableAt > 0 &&
+                    lastReusableAt >= lastCheckAt &&
+                    !latestHasError
+                  const drainNotReusable =
+                    latestHasError &&
+                    item.last_status_code > 0 &&
+                    drainFailureCount > 0
+                  const statusVariant = reusable
+                    ? 'success'
+                    : drainNotReusable
+                      ? 'warning'
+                      : latestHasError
+                        ? 'danger'
+                        : 'neutral'
+                  const statusLabel = reusable
+                    ? t('Connection reusable')
+                    : drainNotReusable
+                      ? t('Connection not reusable')
+                      : latestHasError
+                        ? t('Warmup failed')
+                        : t('No reusable connection')
                   const key = `${item.host}|${item.proxy ?? ''}`
                   return (
                     <div key={key} className='space-y-2 rounded-md border p-3'>
@@ -828,36 +872,39 @@ export function PerformanceSection(props: Props) {
                             </p>
                           ) : null}
                         </div>
-                        <StatusBadge
-                          variant={ok ? 'success' : 'danger'}
-                          copyable={false}
-                        >
-                          {ok ? t('Healthy') : t('Failed')}
+                        <StatusBadge variant={statusVariant} copyable={false}>
+                          {statusLabel}
                         </StatusBadge>
                       </div>
-                      <div className='text-muted-foreground grid grid-cols-2 gap-2 text-xs md:grid-cols-4'>
+                      <div className='text-muted-foreground grid grid-cols-2 gap-2 text-xs md:grid-cols-3'>
                         <span>
-                          {t('Status')}: {item.last_status_code || '-'}
+                          {t('Business status')}: {item.last_status_code || '-'}
                         </span>
                         <span>
                           {t('Latency')}: {item.last_latency_ms || 0} ms
                         </span>
                         <span>
-                          {t('Success')}: {item.success_count}
+                          {t('Connect success')}: {connectSuccessCount}
+                        </span>
+                        <span>
+                          {t('Reusable success')}: {reusableSuccessCount}
+                        </span>
+                        <span>
+                          {t('Drain failure')}: {drainFailureCount}
                         </span>
                         <span>
                           {t('Failure')}: {item.failure_count}
                         </span>
-                        <span className='md:col-span-2'>
-                          {t('Last Check')}: {formatUnixTime(item.last_check_at)}
+                        <span>
+                          {t('Last Check')}:{' '}
+                          {formatUnixTime(item.last_check_at)}
                         </span>
-                        <span className='md:col-span-2'>
-                          {t('Last Success')}:{' '}
-                          {formatUnixTime(item.last_success_at)}
+                        <span>
+                          {t('Last reusable')}: {formatUnixTime(lastReusableAt)}
                         </span>
                       </div>
                       {item.last_error ? (
-                        <p className='text-destructive break-all text-xs'>
+                        <p className='text-destructive text-xs break-all'>
                           {item.last_error}
                         </p>
                       ) : null}
@@ -870,6 +917,67 @@ export function PerformanceSection(props: Props) {
                 {t('No warmup status yet')}
               </p>
             )}
+          </div>
+
+          <Separator />
+
+          <div>
+            <h4 className='font-medium'>{t('Upstream request tracing')}</h4>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t(
+                'Diagnose first-token latency by recording per-stage upstream timing (connection reuse, request upload, response header, first SSE, local flush) into the admin log detail. Off by default; enable only while investigating.'
+              )}
+            </p>
+          </div>
+
+          <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='UpstreamTraceEnabled'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Enable upstream tracing')}</FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Records segmented upstream timing into the admin-visible log detail.'
+                      )}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                </SettingsSwitchItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='UpstreamTraceSampleRate'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Trace sample rate')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={0}
+                      max={1}
+                      step={0.1}
+                      {...safeNumberFieldProps(field)}
+                      disabled={!upstreamTraceEnabled}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      '1 = trace every request, 0 = off. Lower it to reduce log volume under high concurrency.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
           </div>
         </SettingsForm>
       </Form>

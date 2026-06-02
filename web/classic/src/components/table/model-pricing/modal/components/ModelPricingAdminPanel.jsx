@@ -100,6 +100,7 @@ const NUMERIC_GROUP_FIELDS = [
   'image_price',
   'audio_price',
   'audio_completion_price',
+  'min_fee',
 ];
 
 const emptyGroupDraft = () => ({
@@ -114,6 +115,7 @@ const emptyGroupDraft = () => ({
   image_price: '',
   audio_price: '',
   audio_completion_price: '',
+  min_fee: '',
 });
 
 const groupPricingItemToDraft = (item) => {
@@ -192,6 +194,7 @@ const fieldsForGroupMode = (mode, t) => {
     ['image_price', t('图片输入价格'), PRICE_SUFFIX],
     ['audio_price', t('音频输入价格'), PRICE_SUFFIX],
     ['audio_completion_price', t('音频补全价格'), PRICE_SUFFIX],
+    ['min_fee', t('最低费用'), '$/次'],
   ];
 };
 
@@ -223,6 +226,7 @@ const buildInitialBaseForm = (modelData) => {
   return {
     billing_mode: billingMode,
     model_price: formatNumber(modelData?.model_price),
+    min_fee: formatNumber(modelData?.model_min_fee),
     prompt_price: promptPrice,
     completion_price: deriveLanePrice(modelData?.completion_ratio, promptPrice),
     cache_price: deriveLanePrice(modelData?.cache_ratio, promptPrice),
@@ -302,6 +306,7 @@ const buildBasePayload = (modelData, baseForm, t) => {
         baseForm.audio_price,
       ),
     ),
+    min_fee: parseOptionalNumber(baseForm.min_fee),
   };
 };
 
@@ -544,6 +549,7 @@ export default function ModelPricingAdminPanel({
                   ['image_price', '图片输入价格'],
                   ['audio_price', '音频输入价格'],
                   ['audio_completion_price', '音频补全价格'],
+                  ['min_fee', '最低费用'],
                 ].map(([field, label]) => (
                   <div key={field}>
                     <Text size='small' type='secondary'>
@@ -553,7 +559,7 @@ export default function ModelPricingAdminPanel({
                       value={toNumberOrNull(baseForm[field])}
                       min={0}
                       disabled={!editing}
-                      suffix={PRICE_SUFFIX}
+                      suffix={field === 'min_fee' ? '$/次' : PRICE_SUFFIX}
                       onChange={(value) =>
                         updateBaseForm(field, formatNumber(value))
                       }

@@ -2047,6 +2047,8 @@
     "Input": "Input",
     "Input mode": "Input mode",
     "Input price": "Input price",
+    "Min fee": "Min fee",
+    "Minimum charge per request; leave empty for none.": "Minimum charge per request; leave empty for none.",
     "Input price is required before saving dependent prices.": "Input price is required before saving dependent prices.",
     "Input tokens": "Input tokens",
     "Input Tokens": "Input Tokens",

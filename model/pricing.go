@@ -132,6 +132,7 @@ func sanitizeModelGroupPricingItem(item types.ModelGroupPricing) (types.ModelGro
 		{item.ImagePrice, func(value float64) { cleaned.ImagePrice = &value }},
 		{item.AudioPrice, func(value float64) { cleaned.AudioPrice = &value }},
 		{item.AudioCompletionPrice, func(value float64) { cleaned.AudioCompletionPrice = &value }},
+		{item.MinFee, func(value float64) { cleaned.MinFee = &value }},
 	} {
 		if pair.source != nil && isFiniteNonNegative(*pair.source) {
 			pair.assign(*pair.source)
@@ -222,7 +223,7 @@ func GetModelGroupRatio(modelName, group string) (float64, bool) {
 
 func GetModelGroupPriceOverrides(modelName, group string) (types.ModelGroupPricing, bool) {
 	pricing, ok := GetModelGroupPricing(modelName, group)
-	if !ok || (!pricing.HasPriceOverride() && !pricing.HasBillingMode()) {
+	if !ok || (!pricing.HasPriceOverride() && !pricing.HasBillingMode() && !pricing.HasMinFee()) {
 		return types.ModelGroupPricing{}, false
 	}
 	return pricing, true
@@ -241,7 +242,7 @@ func modelGroupPricingRatioView(values map[string]types.ModelGroupPricing) map[s
 	}
 	result := make(map[string]interface{}, len(values))
 	for group, item := range values {
-		if !item.HasPriceOverride() && !item.HasBillingMode() {
+		if !item.HasPriceOverride() && !item.HasBillingMode() && !item.HasMinFee() {
 			if ratio, ok := getPricingRatio(item); ok {
 				result[group] = ratio
 				continue

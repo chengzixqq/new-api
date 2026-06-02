@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 func modelPriceNotConfiguredError(modelName string, userId int) error {
@@ -88,6 +89,29 @@ func resolveGroupBillingMode(groupRatioInfo types.GroupRatioInfo) (mode string, 
 
 func priceToQuotaPerToken(price float64) float64 {
 	return price / 1_000_000 * common.QuotaPerUnit
+}
+
+// minFeeToQuota 把「美元最低费用」折算成内部 quota；fee<=0 返回 0。
+func minFeeToQuota(fee float64, groupRatio float64) int {
+	if fee <= 0 {
+		return 0
+	}
+	return int(decimal.NewFromFloat(fee).
+		Mul(decimal.NewFromFloat(common.QuotaPerUnit)).
+		Mul(decimal.NewFromFloat(groupRatio)).
+		Round(0).
+		IntPart())
+}
+
+// computeMinQuota 解析最低费用下限：分组强制值优先（不乘倍率），否则模型级默认值（乘倍率）。
+func computeMinQuota(override *types.ModelGroupPricing, modelName string, groupRatio float64) int {
+	if override != nil && override.MinFee != nil {
+		return minFeeToQuota(*override.MinFee, 1.0)
+	}
+	if modelMinFee, ok := ratio_setting.GetModelMinFee(modelName); ok {
+		return minFeeToQuota(modelMinFee, groupRatio)
+	}
+	return 0
 }
 
 func applyTokenPriceOverrides(priceData *types.PriceData, promptTokens int) {
@@ -232,6 +256,9 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		QuotaToPreConsume:    preConsumedQuota,
 		GroupPriceOverride:   groupRatioInfo.ModelGroupPricing,
 	}
+	if !usePrice {
+		priceData.MinQuota = computeMinQuota(groupRatioInfo.ModelGroupPricing, info.OriginModelName, groupRatioInfo.GroupRatio)
+	}
 	applyTokenPriceOverrides(&priceData, preConsumedTokens)
 	applyPerCallPriceOverrides(&priceData)
 
@@ -301,11 +328,11 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (types
 	}
 
 	priceData := types.PriceData{
-		FreeModel:      freeModel,
-		ModelPrice:     modelPrice,
-		ModelRatio:     modelRatio,
-		UsePrice:       usePrice,
-		Quota:          quota,
+		FreeModel:          freeModel,
+		ModelPrice:         modelPrice,
+		ModelRatio:         modelRatio,
+		UsePrice:           usePrice,
+		Quota:              quota,
 		GroupRatioInfo:     groupRatioInfo,
 		GroupPriceOverride: groupRatioInfo.ModelGroupPricing,
 	}

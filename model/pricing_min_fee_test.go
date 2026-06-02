@@ -35,3 +35,10 @@ func TestModelGroupPricingRatioViewKeepsMinFee(t *testing.T) {
 		t.Fatalf("group with MinFee must stay a full item, got %T", view["vip"])
 	}
 }
+
+func TestPricingStructExposesModelMinFeeField(t *testing.T) {
+	p := Pricing{ModelMinFee: 0.05}
+	if p.ModelMinFee != 0.05 {
+		t.Fatalf("ModelMinFee field missing or wrong: %v", p.ModelMinFee)
+	}
+}

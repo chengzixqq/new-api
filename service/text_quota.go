@@ -407,6 +407,18 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	return summary
 }
 
+// applyMinFeeQuota 对按量计费请求兜底最低费用：仅 !UsePrice、非阶梯、有实际计费(totalTokens>0)
+// 且算出的 quota 低于 MinQuota 时，抬升到 MinQuota。返回兜底后的 quota 及是否触发。
+func applyMinFeeQuota(quota int, priceData types.PriceData, totalTokens int, tieredApplied bool) (int, bool) {
+	if totalTokens <= 0 || priceData.UsePrice || tieredApplied {
+		return quota, false
+	}
+	if priceData.MinQuota > 0 && quota < priceData.MinQuota {
+		return priceData.MinQuota, true
+	}
+	return quota, false
+}
+
 func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) string {
 	if usage != nil && usage.UsageSemantic != "" {
 		return usage.UsageSemantic
@@ -443,6 +455,8 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 			summary.Quota = composeTieredTextQuota(relayInfo, summary, tieredQuota, tieredRes)
 		}
 	}
+
+	summary.Quota, _ = applyMinFeeQuota(summary.Quota, relayInfo.PriceData, summary.TotalTokens, tieredBillingApplied)
 
 	if summary.WebSearchCallCount > 0 {
 		extraContent = append(extraContent, fmt.Sprintf("Web Search 调用 %d 次，调用花费 %s", summary.WebSearchCallCount, decimal.NewFromFloat(summary.WebSearchPrice).Mul(decimal.NewFromInt(int64(summary.WebSearchCallCount))).Div(decimal.NewFromInt(1000)).Mul(decimal.NewFromFloat(summary.GroupRatio)).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).String()))

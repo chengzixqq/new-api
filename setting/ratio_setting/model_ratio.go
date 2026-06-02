@@ -707,6 +707,26 @@ func GetModelPriceCopy() map[string]float64 {
 	return modelPriceMap.ReadAll()
 }
 
+var modelMinFeeMap = types.NewRWMap[string, float64]()
+
+func ModelMinFee2JSONString() string {
+	return modelMinFeeMap.MarshalJSONString()
+}
+
+func UpdateModelMinFeeByJSONString(jsonStr string) error {
+	return types.LoadFromJsonStringWithCallback(modelMinFeeMap, jsonStr, InvalidateExposedDataCache)
+}
+
+// GetModelMinFee 返回模型级最低费用（美元/次），未配置返回 0,false。
+func GetModelMinFee(name string) (float64, bool) {
+	name = FormatMatchingModelName(name)
+	return modelMinFeeMap.Get(name)
+}
+
+func GetModelMinFeeCopy() map[string]float64 {
+	return modelMinFeeMap.ReadAll()
+}
+
 func GetCompletionRatioCopy() map[string]float64 {
 	return completionRatioMap.ReadAll()
 }

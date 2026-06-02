@@ -2049,6 +2049,8 @@
     "Input": "输入",
     "Input mode": "输入模式",
     "Input price": "输入价格",
+    "Min fee": "最低费用",
+    "Minimum charge per request; leave empty for none.": "每次请求的最低收费；留空表示不设最低费用。",
     "Input price is required before saving dependent prices.": "保存依赖价格前必须先填写输入价格。",
     "Input tokens": "输入 token",
     "Input Tokens": "输入 Token",

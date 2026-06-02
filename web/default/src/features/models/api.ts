@@ -113,6 +113,7 @@ export type UpdateModelPricingPayload = {
   audio_ratio?: number
   audio_completion_ratio?: number
   billing_expr?: string
+  min_fee?: number
 }
 
 export async function updateModelPricing(

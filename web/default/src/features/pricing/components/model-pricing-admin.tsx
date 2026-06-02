@@ -117,6 +117,7 @@ type GroupPricingDraft = {
   image_price: string
   audio_price: string
   audio_completion_price: string
+  min_fee: string
 }
 
 const emptyGroupDraft = (): GroupPricingDraft => ({
@@ -131,6 +132,7 @@ const emptyGroupDraft = (): GroupPricingDraft => ({
   image_price: '',
   audio_price: '',
   audio_completion_price: '',
+  min_fee: '',
 })
 
 function groupPricingItemToDraft(item?: ModelGroupPricingItem): GroupPricingDraft {
@@ -151,6 +153,7 @@ function groupPricingItemToDraft(item?: ModelGroupPricingItem): GroupPricingDraf
   draft.image_price = formatDraft(item.image_price)
   draft.audio_price = formatDraft(item.audio_price)
   draft.audio_completion_price = formatDraft(item.audio_completion_price)
+  draft.min_fee = formatDraft(item.min_fee)
   draft.billing_mode =
     typeof item.billing_mode === 'string' ? item.billing_mode : ''
   draft.billing_expr =
@@ -168,6 +171,7 @@ const NUMERIC_GROUP_FIELDS: Array<keyof GroupPricingDraft> = [
   'image_price',
   'audio_price',
   'audio_completion_price',
+  'min_fee',
 ]
 
 function draftToGroupPricingItem(
@@ -236,6 +240,7 @@ function fieldsForGroupMode(mode: string): GroupFieldDef[] {
     { key: 'image_price', label: 'Image price' },
     { key: 'audio_price', label: 'Audio input' },
     { key: 'audio_completion_price', label: 'Audio output' },
+    { key: 'min_fee', label: 'Min fee', placeholder: '$/request' },
   ]
 }
 

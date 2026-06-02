@@ -3333,6 +3333,7 @@
     "输入IP地址后回车，如：8.8.8.8": "Введите IP-адрес и нажмите Enter, например: 8.8.8.8",
     "输入JSON对象": "Введите JSON-объект",
     "输入价格": "Цена ввода",
+    "最低费用": "Минимальная плата",
     "输入价格 {{symbol}}{{price}} / 1M tokens": "Цена ввода {{symbol}}{{price}} / 1M tokens",
     "输入价格：{{symbol}}{{price}} / 1M tokens": "Цена ввода: {{symbol}}{{price}} / 1M tokens",
     "输入价格：{{symbol}}{{price}} / 1M tokens{{audioPrice}}": "Цена ввода: {{symbol}}{{price}} / 1M tokens{{audioPrice}}",

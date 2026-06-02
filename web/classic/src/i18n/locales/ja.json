@@ -3282,6 +3282,7 @@
     "输入IP地址后回车，如：8.8.8.8": "IPアドレスを入力してEnter（例：8.8.8.8）",
     "输入JSON对象": "JSONオブジェクトを入力してください",
     "输入价格": "入力価格",
+    "最低费用": "最低料金",
     "输入价格 {{symbol}}{{price}} / 1M tokens": "入力価格 {{symbol}}{{price}} / 1M tokens",
     "输入价格：{{symbol}}{{price}} / 1M tokens": "入力価格：{{symbol}}{{price}} / 1M tokens",
     "输入价格：{{symbol}}{{price}} / 1M tokens{{audioPrice}}": "入力料金：{{symbol}}{{price}} / 1M tokens{{audioPrice}}",

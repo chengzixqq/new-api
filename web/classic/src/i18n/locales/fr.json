@@ -3313,6 +3313,7 @@
     "输入IP地址后回车，如：8.8.8.8": "Saisissez l'adresse IP et appuyez sur Entrée, par exemple : 8.8.8.8",
     "输入JSON对象": "Saisir l'objet JSON",
     "输入价格": "Prix d'entrée",
+    "最低费用": "Frais minimum",
     "输入价格 {{symbol}}{{price}} / 1M tokens": "Prix d'entrée {{symbol}}{{price}} / 1M tokens",
     "输入价格：{{symbol}}{{price}} / 1M tokens": "Prix d'entrée : {{symbol}}{{price}} / 1M tokens",
     "输入价格：{{symbol}}{{price}} / 1M tokens{{audioPrice}}": "Prix d'entrée : {{symbol}}{{price}} / 1M tokens{{audioPrice}}",

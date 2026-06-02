@@ -36,6 +36,7 @@ type UpdateModelPricingRequest struct {
 	AudioRatio           *float64 `json:"audio_ratio"`
 	AudioCompletionRatio *float64 `json:"audio_completion_ratio"`
 	BillingExpr          string   `json:"billing_expr"`
+	MinFee               *float64 `json:"min_fee"`
 }
 
 func writeFloatMapOption(key string, values map[string]float64) error {
@@ -108,6 +109,7 @@ func updateModelPricingForMeta(c *gin.Context, m model.Model, req UpdateModelPri
 	}
 
 	modelPrices := ratio_setting.GetModelPriceCopy()
+	modelMinFees := ratio_setting.GetModelMinFeeCopy()
 	modelRatios := ratio_setting.GetModelRatioCopy()
 	completionRatios := ratio_setting.GetCompletionRatioCopy()
 	cacheRatios := ratio_setting.GetCacheRatioCopy()
@@ -119,6 +121,7 @@ func updateModelPricingForMeta(c *gin.Context, m model.Model, req UpdateModelPri
 	billingExprs := billing_setting.GetBillingExprCopy()
 
 	delete(modelPrices, modelName)
+	delete(modelMinFees, modelName)
 	delete(modelRatios, modelName)
 	delete(completionRatios, modelName)
 	delete(cacheRatios, modelName)
@@ -145,6 +148,10 @@ func updateModelPricingForMeta(c *gin.Context, m model.Model, req UpdateModelPri
 			return
 		}
 		if err := setOptionalRatio(modelRatios, modelName, req.ModelRatio); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err := setOptionalRatio(modelMinFees, modelName, req.MinFee); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -186,6 +193,7 @@ func updateModelPricingForMeta(c *gin.Context, m model.Model, req UpdateModelPri
 		values map[string]float64
 	}{
 		{"ModelPrice", modelPrices},
+		{"ModelMinFee", modelMinFees},
 		{"ModelRatio", modelRatios},
 		{"CompletionRatio", completionRatios},
 		{"CacheRatio", cacheRatios},

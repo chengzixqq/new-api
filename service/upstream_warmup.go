@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -19,16 +20,27 @@ import (
 )
 
 const (
-	defaultUpstreamWarmupInterval = 30 * time.Second
-	defaultUpstreamWarmupTimeout  = 10 * time.Second
-	minUpstreamWarmupInterval     = 5 * time.Second
-	defaultUpstreamWarmupPath     = "/v1/models"
+	defaultUpstreamWarmupInterval    = 30 * time.Second
+	defaultUpstreamWarmupTimeout     = 10 * time.Second
+	minUpstreamWarmupInterval        = 5 * time.Second
+	defaultUpstreamWarmupPath        = "/v1/models"
+	defaultUpstreamWarmupUA          = "new-api-upstream-warmup/1.0"
+	defaultUpstreamWarmupConcurrency = 8
+	defaultUpstreamWarmupH1Conns     = 1
+	minUpstreamWarmupConcurrency     = 1
+	maxUpstreamWarmupConcurrency     = 32
 )
 
 var warmupForbiddenSubpaths = []string{
 	"/chat/completions", "/responses", "/images/generations",
 	"/embeddings", "/audio/", "/moderations", "/completions",
 }
+
+var (
+	warmupProtoStore          sync.Map
+	buildWarmupTargetsHook    = buildWarmupTargets
+	upstreamWarmupEnabledHook = upstreamWarmupEnabled
+)
 
 type warmupTarget struct {
 	key    string
@@ -46,7 +58,16 @@ func StartUpstreamWarmupTask() {
 	timeout := parseUpstreamWarmupDuration("UPSTREAM_WARMUP_TIMEOUT", defaultUpstreamWarmupTimeout)
 	jitter := parseUpstreamWarmupJitter("UPSTREAM_WARMUP_JITTER", 0.2)
 
-	common.SysLog(fmt.Sprintf("upstream warmup task started: enabled=%t interval=%s timeout=%s jitter=%.2f", upstreamWarmupEnabled(), interval, timeout, jitter))
+	common.SysLog(fmt.Sprintf(
+		"upstream warmup task started: enabled=%t interval=%s timeout=%s jitter=%.2f concurrency=%d h1_connections=%d user_agent=%q",
+		upstreamWarmupEnabled(),
+		interval,
+		timeout,
+		jitter,
+		upstreamWarmupConcurrency(),
+		upstreamWarmupH1Connections(),
+		upstreamWarmupUserAgent(),
+	))
 	gopool.Go(func() {
 		for {
 			runUpstreamWarmupTick(timeout)
@@ -63,10 +84,10 @@ func runUpstreamWarmupTick(timeout time.Duration) {
 			common.SysError(fmt.Sprintf("upstream warmup tick panic recovered: %v", r))
 		}
 	}()
-	if !upstreamWarmupEnabled() {
+	if !upstreamWarmupEnabledHook() {
 		return
 	}
-	targets := buildWarmupTargets()
+	targets := buildWarmupTargetsHook()
 	pruneWarmupStatus(targets)
 	if len(targets) > 0 {
 		warmTargets(targets, timeout)
@@ -151,31 +172,79 @@ func makeTargetFromURL(rawURL, proxy string, seen map[string]bool) (warmupTarget
 }
 
 func warmTargets(targets []warmupTarget, timeout time.Duration) {
-	for _, target := range targets {
-		start := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.url, nil)
-		if err != nil {
-			cancel()
-			recordWarmupFailure(target, 0, err)
-			continue
-		}
-
-		req.Header.Set("Accept", "*/*")
-		req.Header.Set("User-Agent", "new-api-upstream-warmup/1.0")
-
-		resp, err := target.client.Do(req)
-		if err != nil {
-			cancel()
-			recordWarmupFailure(target, 0, err)
-			continue
-		}
-
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		_ = resp.Body.Close()
-		cancel()
-		recordWarmupSuccess(target, resp.StatusCode, time.Since(start))
+	concurrency := upstreamWarmupConcurrency()
+	if concurrency > len(targets) {
+		concurrency = len(targets)
 	}
+	if concurrency < minUpstreamWarmupConcurrency {
+		concurrency = minUpstreamWarmupConcurrency
+	}
+
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, target := range targets {
+		attempts := warmupAttemptCount(target)
+		for i := 0; i < attempts; i++ {
+			target := target
+			wg.Add(1)
+			sem <- struct{}{}
+			gopool.Go(func() {
+				defer wg.Done()
+				defer func() {
+					<-sem
+				}()
+				defer func() {
+					if r := recover(); r != nil {
+						recordWarmupFailure(target, 0, fmt.Errorf("warmup worker panic: %v", r))
+					}
+				}()
+				warmOneTarget(target, timeout)
+			})
+		}
+	}
+	wg.Wait()
+}
+
+func warmupAttemptCount(target warmupTarget) int {
+	if protoMajor, ok := cachedWarmupProto(target); ok && protoMajor == 1 {
+		return upstreamWarmupH1Connections()
+	}
+	return 1
+}
+
+func warmOneTarget(target warmupTarget, timeout time.Duration) {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.url, nil)
+	if err != nil {
+		recordWarmupFailure(target, 0, err)
+		return
+	}
+
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("User-Agent", upstreamWarmupUserAgent())
+
+	client := target.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		recordWarmupFailure(target, 0, err)
+		return
+	}
+	recordWarmupProto(target, resp.ProtoMajor)
+
+	bytesRead, drainErr := io.Copy(io.Discard, resp.Body)
+	closeErr := resp.Body.Close()
+	latency := time.Since(start)
+	if drainErr != nil || closeErr != nil {
+		recordWarmupDrainFailure(target, resp.StatusCode, latency, bytesRead, drainErr, closeErr)
+		return
+	}
+	recordWarmupReusableSuccess(target, resp.StatusCode, latency)
 }
 
 func parseUpstreamWarmupURLs(raw string) []string {
@@ -240,6 +309,55 @@ func parseUpstreamWarmupJitter(envName string, fallback float64) float64 {
 		return fallback
 	}
 	return value
+}
+
+func upstreamWarmupConcurrency() int {
+	return parseUpstreamWarmupConcurrency("UPSTREAM_WARMUP_CONCURRENCY", defaultUpstreamWarmupConcurrency)
+}
+
+func parseUpstreamWarmupConcurrency(envName string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(envName))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		common.SysError(fmt.Sprintf("invalid %s=%q, using %d", envName, raw, fallback))
+		return fallback
+	}
+	if value < minUpstreamWarmupConcurrency {
+		return minUpstreamWarmupConcurrency
+	}
+	if value > maxUpstreamWarmupConcurrency {
+		return maxUpstreamWarmupConcurrency
+	}
+	return value
+}
+
+func upstreamWarmupH1Connections() int {
+	return parseUpstreamWarmupConcurrency("UPSTREAM_WARMUP_H1_CONNECTIONS", defaultUpstreamWarmupH1Conns)
+}
+
+func upstreamWarmupUserAgent() string {
+	if ua := strings.TrimSpace(os.Getenv("UPSTREAM_WARMUP_UA")); ua != "" {
+		return ua
+	}
+	return defaultUpstreamWarmupUA
+}
+
+func recordWarmupProto(target warmupTarget, protoMajor int) {
+	if protoMajor > 0 {
+		warmupProtoStore.Store(target.key, protoMajor)
+	}
+}
+
+func cachedWarmupProto(target warmupTarget) (int, bool) {
+	value, ok := warmupProtoStore.Load(target.key)
+	if !ok {
+		return 0, false
+	}
+	protoMajor, ok := value.(int)
+	return protoMajor, ok
 }
 
 func upstreamWarmupEnabled() bool {

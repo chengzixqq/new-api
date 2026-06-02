@@ -514,6 +514,9 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
+	// Attach segmented upstream timing (no-op unless UPSTREAM_TRACE_ENABLED).
+	// Placed right before client.Do so StartAt marks the dispatch moment.
+	req = common.AttachUpstreamTrace(req, info)
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.LogError(c, "do request failed: "+err.Error())

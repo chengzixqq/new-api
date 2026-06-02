@@ -70,6 +70,7 @@ var DataExportInterval = 5         // unit: minute
 var DataExportDefaultTime = "hour" // unit: minute
 var DefaultCollapseSidebar = false // default value of collapse sidebar
 var UpstreamWarmupEnabled atomic.Bool // default true, set in init.go
+var UpstreamTraceEnabled atomic.Bool   // default false, set in init.go (segmented upstream httptrace)
 
 // Any options with "Secret", "Token" in its key won't be return by GetOptions
 

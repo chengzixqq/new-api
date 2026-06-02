@@ -3341,6 +3341,7 @@
     "输入JSON对象": "Enter JSON Object",
     "输入与缓存价格合计 * {{ratioType}} {{ratio}} = {{symbol}}{{total}}": "Input and cache pricing subtotal * {{ratioType}} {{ratio}} = {{symbol}}{{total}}",
     "输入价格": "Input Price",
+    "最低费用": "Min fee",
     "输入价格 {{symbol}}{{price}} / 1M tokens": "Input Price {{symbol}}{{price}} / 1M tokens",
     "输入价格：{{symbol}}{{price}} / 1M tokens": "Input Price: {{symbol}}{{price}} / 1M tokens",
     "输入价格：{{symbol}}{{price}} / 1M tokens{{audioPrice}}": "Input Price: {{symbol}}{{price}} / 1M tokens{{audioPrice}}",

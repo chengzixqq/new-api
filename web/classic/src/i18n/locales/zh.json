@@ -2295,6 +2295,7 @@
     "输入IP地址后回车，如：8.8.8.8": "输入IP地址后回车，如：8.8.8.8",
     "输入JSON对象": "输入JSON对象",
     "输入价格": "输入价格",
+    "最低费用": "最低费用",
     "输入价格：{{symbol}}{{price}} / 1M tokens{{audioPrice}}": "输入价格：{{symbol}}{{price}} / 1M tokens{{audioPrice}}",
     "输入你注册的 LinuxDO OAuth APP 的 ID": "输入你注册的 LinuxDO OAuth APP 的 ID",
     "输入你的账户名{{username}}以确认删除": "输入你的账户名{{username}}以确认删除",

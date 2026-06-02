@@ -3304,6 +3304,7 @@
     "输入IP地址后回车，如：8.8.8.8": "輸入IP位址後回車，如：8.8.8.8",
     "输入JSON对象": "輸入JSON對象",
     "输入价格": "輸入價格",
+    "最低费用": "最低費用",
     "输入价格 {{symbol}}{{price}} / 1M tokens": "輸入價格 {{symbol}}{{price}} / 1M tokens",
     "输入价格：{{symbol}}{{price}} / 1M tokens": "輸入價格：{{symbol}}{{price}} / 1M tokens",
     "输入价格：{{symbol}}{{price}} / 1M tokens{{audioPrice}}": "輸入價格：{{symbol}}{{price}} / 1M tokens{{audioPrice}}",

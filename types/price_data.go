@@ -19,6 +19,7 @@ type ModelGroupPricing struct {
 	ImagePrice           *float64 `json:"image_price,omitempty"`
 	AudioPrice           *float64 `json:"audio_price,omitempty"`
 	AudioCompletionPrice *float64 `json:"audio_completion_price,omitempty"`
+	MinFee               *float64 `json:"min_fee,omitempty"`
 }
 
 // Group-level billing modes. nil BillingMode = inherit the model default.
@@ -54,7 +55,7 @@ func (p *ModelGroupPricing) UnmarshalJSON(data []byte) error {
 }
 
 func (p ModelGroupPricing) MarshalJSON() ([]byte, error) {
-	if p.Ratio != nil && !p.HasPriceOverride() && !p.HasBillingMode() {
+	if p.Ratio != nil && !p.HasPriceOverride() && !p.HasBillingMode() && !p.HasMinFee() {
 		return common.Marshal(*p.Ratio)
 	}
 	type alias ModelGroupPricing
@@ -80,8 +81,12 @@ func (p ModelGroupPricing) HasPriceOverride() bool {
 		p.AudioCompletionPrice != nil
 }
 
+func (p ModelGroupPricing) HasMinFee() bool {
+	return p.MinFee != nil
+}
+
 func (p ModelGroupPricing) IsEmpty() bool {
-	return !p.HasRatio() && !p.HasPriceOverride() && !p.HasBillingMode()
+	return !p.HasRatio() && !p.HasPriceOverride() && !p.HasBillingMode() && !p.HasMinFee()
 }
 
 type GroupRatioInfo struct {
@@ -112,6 +117,7 @@ type PriceData struct {
 	QuotaToPreConsume    int // 按量计费的预消耗额度
 	GroupRatioInfo       GroupRatioInfo
 	GroupPriceOverride   *ModelGroupPricing
+	MinQuota             int // 已折算成内部 quota 的最低额度下限；0 = 无最低费用
 }
 
 func (p *PriceData) AddOtherRatio(key string, ratio float64) {

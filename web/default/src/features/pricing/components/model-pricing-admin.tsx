@@ -3,6 +3,10 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Edit3, Save, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { GroupBadge } from '@/components/group-badge'
 import {
   updateModelGroupPricing,
   updateModelGroupPricingByName,
@@ -10,15 +14,11 @@ import {
   updateModelPricingByName,
   type UpdateModelPricingPayload,
 } from '@/features/models/api'
+import { combineBillingExpr } from '@/features/pricing/lib/billing-expr'
 import {
   ModelPricingEditorPanel,
   type ModelRatioData,
 } from '@/features/system-settings/models/model-pricing-sheet'
-import { combineBillingExpr } from '@/features/pricing/lib/billing-expr'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { GroupBadge } from '@/components/group-badge'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
 import { getEffectiveGroupRatio } from '../lib/price'
 import type {
@@ -35,14 +35,22 @@ type ModelPricingAdminPanelProps = {
 }
 
 function formatDraft(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(Number(value))
+  ) {
     return ''
   }
   return Number(value).toString()
 }
 
 function ratioToPrice(ratio: number | null | undefined): string {
-  if (ratio === null || ratio === undefined || !Number.isFinite(Number(ratio))) {
+  if (
+    ratio === null ||
+    ratio === undefined ||
+    !Number.isFinite(Number(ratio))
+  ) {
     return ''
   }
   return formatDraft(Number(ratio) * 2)
@@ -136,7 +144,9 @@ const emptyGroupDraft = (): GroupPricingDraft => ({
   min_fee: '',
 })
 
-function groupPricingItemToDraft(item?: ModelGroupPricingItem): GroupPricingDraft {
+function groupPricingItemToDraft(
+  item?: ModelGroupPricingItem
+): GroupPricingDraft {
   const draft = emptyGroupDraft()
   if (typeof item === 'number') {
     draft.ratio = formatDraft(item)
@@ -370,9 +380,7 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
         }
       }
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : t('Failed to save')
-      )
+      toast.error(error instanceof Error ? error.message : t('Failed to save'))
       return
     }
     saveGroupPricing.mutate(next)
@@ -393,7 +401,7 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
   }
 
   return (
-    <section className='rounded-lg border bg-muted/10'>
+    <section className='bg-muted/10 rounded-lg border'>
       <div className='flex items-center justify-between gap-3 border-b px-3 py-2'>
         <div>
           <div className='text-sm font-medium'>{t('Admin Pricing')}</div>
@@ -426,7 +434,7 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
             />
           </TabsContent>
           <TabsContent value='groups' className='mt-3 space-y-3'>
-            <div className='text-muted-foreground rounded-md border bg-muted/20 p-2 text-xs'>
+            <div className='text-muted-foreground bg-muted/20 rounded-md border p-2 text-xs'>
               {t(
                 'Leave a field empty to use the normal multiplier-based price. Filled item prices are final USD prices for this model and group.'
               )}
@@ -441,10 +449,7 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
                 )
                 const draft = groupDrafts[group] || emptyGroupDraft()
                 return (
-                  <div
-                    key={group}
-                    className='rounded-lg border p-3'
-                  >
+                  <div key={group} className='rounded-lg border p-3'>
                     <div className='mb-3 flex min-w-0 items-center justify-between gap-2'>
                       <div className='flex min-w-0 items-center gap-2'>
                         <GroupBadge group={group} size='sm' />
@@ -452,7 +457,7 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
                           {t('Default')} {fallback}x
                         </span>
                       </div>
-                      <div className='font-mono text-xs text-muted-foreground'>
+                      <div className='text-muted-foreground font-mono text-xs'>
                         {t('Current')} {effective}x
                       </div>
                     </div>
@@ -555,7 +560,7 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
         </Tabs>
       ) : (
         <div className='grid gap-2 p-3 sm:grid-cols-2'>
-          <div className='rounded-md border bg-background/60 p-3'>
+          <div className='bg-background/60 rounded-md border p-3'>
             <div className='text-muted-foreground text-xs'>
               {t('Input price')}
             </div>
@@ -565,7 +570,7 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
                 : formatDraft(props.model.model_price) || '-'}
             </div>
           </div>
-          <div className='rounded-md border bg-background/60 p-3'>
+          <div className='bg-background/60 rounded-md border p-3'>
             <div className='text-muted-foreground text-xs'>
               {t('Group overrides')}
             </div>
@@ -574,7 +579,7 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
             </div>
           </div>
           {isTokenBasedModel(props.model) && (
-            <div className='rounded-md border bg-background/60 p-3 sm:col-span-2'>
+            <div className='bg-background/60 rounded-md border p-3 sm:col-span-2'>
               <div className='text-muted-foreground mb-1 text-xs'>
                 {t('Extra prices')}
               </div>

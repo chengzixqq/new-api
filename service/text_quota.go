@@ -283,7 +283,6 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	dImageRatio := decimal.NewFromFloat(summary.ImageRatio)
 	dModelRatio := decimal.NewFromFloat(summary.ModelRatio)
 	dGroupRatio := decimal.NewFromFloat(summary.GroupRatio)
-	dModelPrice := decimal.NewFromFloat(summary.ModelPrice)
 	dCacheCreationRatio := decimal.NewFromFloat(summary.CacheCreationRatio)
 	dCacheCreationRatio5m := decimal.NewFromFloat(summary.CacheCreationRatio5m)
 	dCacheCreationRatio1h := decimal.NewFromFloat(summary.CacheCreationRatio1h)
@@ -383,7 +382,12 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		}
 		summary.Quota = int(quotaCalculateDecimal.Round(0).IntPart())
 	} else {
-		quotaCalculateDecimal := dModelPrice.Mul(dQuotaPerUnit).Mul(dGroupRatio)
+		// 结算兜底：按次计费但 ModelPrice 为 -1 哨兵（未配置按次价）时当 0（免费），
+		// 避免 -1 直接乘 QuotaPerUnit 产生负 quota（资损）。源头已在 ModelPriceHelper 归零，此处防御。
+		if summary.ModelPrice < 0 {
+			summary.ModelPrice = 0
+		}
+		quotaCalculateDecimal := decimal.NewFromFloat(summary.ModelPrice).Mul(dQuotaPerUnit).Mul(dGroupRatio)
 		if override := relayInfo.PriceData.GroupPriceOverride; override != nil && override.ModelPrice != nil {
 			quotaCalculateDecimal = decimal.NewFromFloat(*override.ModelPrice).Mul(dQuotaPerUnit)
 			summary.ModelPrice = *override.ModelPrice

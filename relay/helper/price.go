@@ -167,6 +167,12 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo, groupExpr)
 		case types.GroupBillingModePerRequest:
 			usePrice = true
+			if modelPrice < 0 {
+				// 分组强制按次计费，但模型级未配置按次价（GetModelPrice 返回 -1 哨兵）。
+				// 归零等分组 override 填充；分组也未填则保持 0（免费），
+				// 避免 -1 哨兵进入预扣/结算产生负 quota（资损）。
+				modelPrice = 0
+			}
 		case types.GroupBillingModePerToken:
 			usePrice = false
 		}

@@ -227,8 +227,14 @@ func validateGroupBillingModes(groupPricing map[string]types.ModelGroupPricing) 
 		}
 		mode := strings.TrimSpace(*item.BillingMode)
 		switch mode {
-		case "", types.GroupBillingModePerToken, types.GroupBillingModePerRequest:
+		case "", types.GroupBillingModePerToken:
 			// ok (empty == inherit)
+		case types.GroupBillingModePerRequest:
+			// 按次计费必须显式填写模型价格（哪怕 0=免费）。
+			// 留空会让 GetModelPrice 返回 -1 哨兵，旧逻辑曾据此负扣费（资损）。
+			if item.ModelPrice == nil {
+				return fmt.Errorf("分组 %s 按次计费需要填写模型价格", group)
+			}
 		case types.GroupBillingModeTieredExpr:
 			if item.BillingExpr == nil || strings.TrimSpace(*item.BillingExpr) == "" {
 				return fmt.Errorf("分组 %s 表达式计费需要填写计费表达式", group)

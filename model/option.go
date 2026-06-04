@@ -51,6 +51,12 @@ func InitOptionMap() {
 	common.OptionMap["UpstreamWarmupEnabled"] = strconv.FormatBool(common.UpstreamWarmupEnabled.Load())
 	common.OptionMap["UpstreamTraceEnabled"] = strconv.FormatBool(common.UpstreamTraceEnabled.Load())
 	common.OptionMap["UpstreamTraceSampleRate"] = strconv.FormatFloat(common.GetUpstreamTraceSampleRate(), 'f', -1, 64)
+	// PoolStatusUpstreamURL and PoolStatusAuthHeader are deliberately NOT
+	// registered here: the upstream host + credential stay env-only so they
+	// never surface via GetOptions or land in the DB.
+	common.OptionMap["PoolStatusEnabled"] = strconv.FormatBool(common.PoolStatusEnabled.Load())
+	common.OptionMap["PoolStatusIntervalSeconds"] = strconv.Itoa(common.PoolStatusIntervalSeconds)
+	common.OptionMap["PoolStatusCategoryName"] = common.PoolStatusCategoryName
 	common.OptionMap["DisplayInCurrencyEnabled"] = strconv.FormatBool(common.DisplayInCurrencyEnabled)
 	common.OptionMap["DisplayTokenStatEnabled"] = strconv.FormatBool(common.DisplayTokenStatEnabled)
 	common.OptionMap["DrawingEnabled"] = strconv.FormatBool(common.DrawingEnabled)
@@ -317,6 +323,8 @@ func updateOptionMap(key string, value string) (err error) {
 			common.UpstreamWarmupEnabled.Store(boolValue)
 		case "UpstreamTraceEnabled":
 			common.UpstreamTraceEnabled.Store(boolValue)
+		case "PoolStatusEnabled":
+			common.PoolStatusEnabled.Store(boolValue)
 		case "DisplayInCurrencyEnabled":
 			// 兼容旧字段：同步到新配置 general_setting.quota_display_type（运行时生效）
 			// true -> USD, false -> TOKENS
@@ -573,6 +581,12 @@ func updateOptionMap(key string, value string) (err error) {
 		}
 	case "QuotaPerUnit":
 		common.QuotaPerUnit, _ = strconv.ParseFloat(value, 64)
+	case "PoolStatusIntervalSeconds":
+		if n, nerr := strconv.Atoi(value); nerr == nil {
+			common.PoolStatusIntervalSeconds = n
+		}
+	case "PoolStatusCategoryName":
+		common.PoolStatusCategoryName = value
 	case "SensitiveWords":
 		setting.SensitiveWordsFromString(value)
 	case "AutomaticDisableKeywords":

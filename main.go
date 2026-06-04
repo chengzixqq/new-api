@@ -98,6 +98,7 @@ func main() {
 	}
 
 	service.StartUpstreamWarmupTask()
+	service.StartPoolStatusTask()
 
 	// 热更新配置
 	go model.SyncOptions(common.SyncFrequency)

@@ -185,7 +185,7 @@ var BatchUpdateInterval int
 
 var RelayTimeout int // unit is second
 
-var RelayIdleConnTimeout int // unit is second
+var RelayIdleConnTimeout int // unit is second, 0 means use default (90s)
 var RelayMaxIdleConns int
 var RelayMaxIdleConnsPerHost int
 

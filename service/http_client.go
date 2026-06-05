@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,7 +13,14 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
+	"golang.org/x/net/http2"
 	"golang.org/x/net/proxy"
+)
+
+const (
+	upstreamIdleConnTimeout   = 90 * time.Second
+	upstreamH2ReadIdleTimeout = 15 * time.Second
+	upstreamH2PingTimeout     = 5 * time.Second
 )
 
 var (
@@ -34,29 +42,58 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 }
 
 func InitHttpClient() {
+	transport, _, _ := buildUpstreamTransport(http.ProxyFromEnvironment, nil)
+	httpClient = buildUpstreamHTTPClient(transport)
+}
+
+func buildUpstreamTLSConfig() *tls.Config {
+	tlsConf := &tls.Config{
+		ClientSessionCache: tls.NewLRUClientSessionCache(0),
+	}
+	if common.TLSInsecureSkipVerify {
+		tlsConf.InsecureSkipVerify = true
+	}
+	return tlsConf
+}
+
+func buildUpstreamTransport(proxyFunc func(*http.Request) (*url.URL, error), dialContext func(context.Context, string, string) (net.Conn, error)) (*http.Transport, *http2.Transport, error) {
+	idleConnTimeout := upstreamIdleConnTimeout
+	if common.RelayIdleConnTimeout > 0 {
+		idleConnTimeout = time.Duration(common.RelayIdleConnTimeout) * time.Second
+	}
 	transport := &http.Transport{
 		MaxIdleConns:        common.RelayMaxIdleConns,
 		MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-		IdleConnTimeout:     time.Duration(common.RelayIdleConnTimeout) * time.Second,
 		ForceAttemptHTTP2:   true,
-		Proxy:               http.ProxyFromEnvironment, // Support HTTP_PROXY, HTTPS_PROXY, NO_PROXY env vars
+		Proxy:               proxyFunc,
+		DialContext:         dialContext,
+		IdleConnTimeout:     idleConnTimeout,
+		TLSClientConfig:     buildUpstreamTLSConfig(),
 	}
-	if common.TLSInsecureSkipVerify {
-		transport.TLSClientConfig = common.InsecureTLSConfig
-	}
+	h2t, err := enableUpstreamH2Keepalive(transport)
+	return transport, h2t, err
+}
 
-	if common.RelayTimeout == 0 {
-		httpClient = &http.Client{
-			Transport:     transport,
-			CheckRedirect: checkRedirect,
-		}
-	} else {
-		httpClient = &http.Client{
-			Transport:     transport,
-			Timeout:       time.Duration(common.RelayTimeout) * time.Second,
-			CheckRedirect: checkRedirect,
-		}
+func enableUpstreamH2Keepalive(transport *http.Transport) (*http2.Transport, error) {
+	h2t, err := http2.ConfigureTransports(transport)
+	if err != nil {
+		common.SysError("upstream keepalive: ConfigureTransports failed: " + err.Error())
+		return nil, err
 	}
+	h2t.ReadIdleTimeout = upstreamH2ReadIdleTimeout
+	h2t.PingTimeout = upstreamH2PingTimeout
+	return h2t, nil
+}
+
+func buildUpstreamHTTPClient(transport *http.Transport) *http.Client {
+	client := &http.Client{
+		Transport:     transport,
+		CheckRedirect: checkRedirect,
+	}
+	if common.RelayTimeout != 0 {
+		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
+	}
+	return client
 }
 
 func GetHttpClient() *http.Client {
@@ -93,11 +130,10 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 	}
 
 	proxyClientLock.Lock()
+	defer proxyClientLock.Unlock()
 	if client, ok := proxyClients[proxyURL]; ok {
-		proxyClientLock.Unlock()
 		return client, nil
 	}
-	proxyClientLock.Unlock()
 
 	parsedURL, err := url.Parse(proxyURL)
 	if err != nil {
@@ -106,24 +142,12 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 
 	switch parsedURL.Scheme {
 	case "http", "https":
-		transport := &http.Transport{
-			MaxIdleConns:        common.RelayMaxIdleConns,
-			MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-			IdleConnTimeout:     time.Duration(common.RelayIdleConnTimeout) * time.Second,
-			ForceAttemptHTTP2:   true,
-			Proxy:               http.ProxyURL(parsedURL),
+		transport, _, err := buildUpstreamTransport(http.ProxyURL(parsedURL), nil)
+		if err != nil {
+			return nil, err
 		}
-		if common.TLSInsecureSkipVerify {
-			transport.TLSClientConfig = common.InsecureTLSConfig
-		}
-		client := &http.Client{
-			Transport:     transport,
-			CheckRedirect: checkRedirect,
-		}
-		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
-		proxyClientLock.Lock()
+		client := buildUpstreamHTTPClient(transport)
 		proxyClients[proxyURL] = client
-		proxyClientLock.Unlock()
 		return client, nil
 
 	case "socks5", "socks5h":
@@ -146,24 +170,14 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 			return nil, err
 		}
 
-		transport := &http.Transport{
-			MaxIdleConns:        common.RelayMaxIdleConns,
-			MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-			IdleConnTimeout:     time.Duration(common.RelayIdleConnTimeout) * time.Second,
-			ForceAttemptHTTP2:   true,
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
-			},
+		transport, _, err := buildUpstreamTransport(nil, func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
+		})
+		if err != nil {
+			return nil, err
 		}
-		if common.TLSInsecureSkipVerify {
-			transport.TLSClientConfig = common.InsecureTLSConfig
-		}
-
-		client := &http.Client{Transport: transport, CheckRedirect: checkRedirect}
-		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
-		proxyClientLock.Lock()
+		client := buildUpstreamHTTPClient(transport)
 		proxyClients[proxyURL] = client
-		proxyClientLock.Unlock()
 		return client, nil
 
 	default:

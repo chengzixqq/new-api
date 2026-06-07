@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Edit3, Save, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -17,6 +17,7 @@ import {
 import { combineBillingExpr } from '@/features/pricing/lib/billing-expr'
 import {
   ModelPricingEditorPanel,
+  type ModelPricingEditorPanelHandle,
   type ModelRatioData,
 } from '@/features/system-settings/models/model-pricing-sheet'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
@@ -297,6 +298,7 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
+  const editorPanelRef = useRef<ModelPricingEditorPanelHandle>(null)
   const [groupDrafts, setGroupDrafts] = useState<
     Record<string, GroupPricingDraft>
   >({})
@@ -423,15 +425,27 @@ export function ModelPricingAdminPanel(props: ModelPricingAdminPanelProps) {
             <TabsTrigger value='base'>{t('Base Price')}</TabsTrigger>
             <TabsTrigger value='groups'>{t('Group Overrides')}</TabsTrigger>
           </TabsList>
-          <TabsContent value='base' className='mt-3'>
+          <TabsContent value='base' className='mt-3 space-y-3'>
             <ModelPricingEditorPanel
+              ref={editorPanelRef}
               editData={basePricingData}
-              selectedTargetCount={1}
-              onSave={(data) => saveModelPricing.mutate(data)}
-              onCancel={() => setEditing(false)}
-              closeOnSave={false}
+              isSaving={saveModelPricing.isPending}
+              onSave={async () => {
+                const data = await editorPanelRef.current?.commitDraft()
+                if (data) saveModelPricing.mutate(data)
+              }}
               className='max-h-[640px] min-h-[520px] rounded-lg'
             />
+            <div className='flex justify-end'>
+              <Button
+                size='sm'
+                variant='outline'
+                onClick={() => setEditing(false)}
+              >
+                <X className='size-3.5' />
+                {t('Cancel')}
+              </Button>
+            </div>
           </TabsContent>
           <TabsContent value='groups' className='mt-3 space-y-3'>
             <div className='text-muted-foreground bg-muted/20 rounded-md border p-2 text-xs'>

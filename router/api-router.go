@@ -267,6 +267,7 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/upstream_updates/apply_all", controller.ApplyAllChannelUpstreamModelUpdates)
 			channelRoute.POST("/upstream_updates/detect", controller.DetectChannelUpstreamModelUpdates)
 			channelRoute.POST("/upstream_updates/detect_all", controller.DetectAllChannelUpstreamModelUpdates)
+			channelRoute.GET("/upstream_warmup/status", controller.GetUpstreamWarmupStatus)
 		}
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())
@@ -368,6 +369,10 @@ func SetApiRouter(router *gin.Engine) {
 			modelsRoute.GET("/search", controller.SearchModelsMeta)
 			modelsRoute.GET("/:id", controller.GetModelMeta)
 			modelsRoute.POST("/", controller.CreateModelMeta)
+			modelsRoute.PUT("/pricing_by_name", middleware.AdminAuth(), controller.UpdateModelPricingByName)
+			modelsRoute.PUT("/group_pricing_by_name", middleware.AdminAuth(), controller.UpdateModelGroupPricingByName)
+			modelsRoute.PUT("/:id/pricing", middleware.AdminAuth(), controller.UpdateModelPricing)
+			modelsRoute.PUT("/:id/group_pricing", middleware.AdminAuth(), controller.UpdateModelGroupPricing)
 			modelsRoute.PUT("/", controller.UpdateModelMeta)
 			modelsRoute.DELETE("/:id", controller.DeleteModelMeta)
 		}

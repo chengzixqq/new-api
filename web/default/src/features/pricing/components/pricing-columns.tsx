@@ -28,7 +28,7 @@ import {
 import { DataTableColumnHeader } from '@/components/data-table'
 import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge, StatusBadgeList } from '@/components/status-badge'
-import { DEFAULT_TOKEN_UNIT, QUOTA_TYPE_VALUES } from '../constants'
+import { DEFAULT_TOKEN_UNIT, FILTER_ALL, QUOTA_TYPE_VALUES } from '../constants'
 import {
   getDynamicDisplayGroupRatio,
   getDynamicPricingSummary,
@@ -38,6 +38,7 @@ import { isTokenBasedModel } from '../lib/model-helpers'
 import {
   formatPrice,
   formatRequestPrice,
+  resolveGroupBillingMode,
   stripTrailingZeros,
 } from '../lib/price'
 import type { PricingModel, TokenUnit } from '../types'
@@ -51,6 +52,8 @@ export interface PricingColumnsOptions {
   priceRate?: number
   usdExchangeRate?: number
   showRechargePrice?: boolean
+  /** Currently selected token group; when set (and not "all"), prices reflect this group. */
+  selectedGroup?: string
 }
 
 function renderLimitedTags(
@@ -92,8 +95,23 @@ export function usePricingColumns(
     priceRate = 1,
     usdExchangeRate = 1,
     showRechargePrice = false,
+    selectedGroup,
   } = options
 
+  const specificGroup =
+    selectedGroup && selectedGroup !== FILTER_ALL ? selectedGroup : undefined
+  // Effective billing mode for display: a selected group's override wins;
+  // otherwise fall back to the model-level mode.
+  const getEffectiveMode = (
+    model: PricingModel
+  ): 'per-token' | 'per-request' | 'tiered_expr' =>
+    specificGroup
+      ? resolveGroupBillingMode(model, specificGroup)
+      : model.billing_mode === 'tiered_expr' && Boolean(model.billing_expr)
+        ? 'tiered_expr'
+        : isTokenBasedModel(model)
+          ? 'per-token'
+          : 'per-request'
   const tokenUnitLabel = tokenUnit === 'K' ? '1K' : '1M'
 
   return [
@@ -149,13 +167,27 @@ export function usePricingColumns(
       ),
       cell: ({ row }) => {
         const model = row.original
-        const dynamicSummary = getDynamicPricingSummary(model, {
-          tokenUnit,
-          showRechargePrice,
-          priceRate,
-          usdExchangeRate,
-          groupRatioMultiplier: getDynamicDisplayGroupRatio(model),
-        })
+        // When a specific group is selected, its override mode wins; otherwise
+        // fall back to the model-level mode.
+        const effectiveMode = getEffectiveMode(model)
+
+        const dynamicSummary =
+          effectiveMode === 'tiered_expr'
+            ? getDynamicPricingSummary(
+                model,
+                {
+                  tokenUnit,
+                  showRechargePrice,
+                  priceRate,
+                  usdExchangeRate,
+                  groupRatioMultiplier: getDynamicDisplayGroupRatio(
+                    model,
+                    specificGroup
+                  ),
+                },
+                specificGroup
+              )
+            : null
 
         if (dynamicSummary) {
           if (dynamicSummary.isSpecialExpression) {
@@ -206,9 +238,7 @@ export function usePricingColumns(
           )
         }
 
-        const isTokenBased = isTokenBasedModel(model)
-
-        if (isTokenBased) {
+        if (effectiveMode === 'per-token') {
           const inputPrice = stripTrailingZeros(
             formatPrice(
               model,
@@ -216,7 +246,8 @@ export function usePricingColumns(
               tokenUnit,
               showRechargePrice,
               priceRate,
-              usdExchangeRate
+              usdExchangeRate,
+              specificGroup
             )
           )
           const outputPrice = stripTrailingZeros(
@@ -226,7 +257,8 @@ export function usePricingColumns(
               tokenUnit,
               showRechargePrice,
               priceRate,
-              usdExchangeRate
+              usdExchangeRate,
+              specificGroup
             )
           )
 
@@ -249,7 +281,8 @@ export function usePricingColumns(
             model,
             showRechargePrice,
             priceRate,
-            usdExchangeRate
+            usdExchangeRate,
+            specificGroup
           )
         )
 
@@ -273,13 +306,25 @@ export function usePricingColumns(
       header: t('Cached'),
       cell: ({ row }) => {
         const model = row.original
-        const dynamicSummary = getDynamicPricingSummary(model, {
-          tokenUnit,
-          showRechargePrice,
-          priceRate,
-          usdExchangeRate,
-          groupRatioMultiplier: getDynamicDisplayGroupRatio(model),
-        })
+        const effectiveMode = getEffectiveMode(model)
+
+        const dynamicSummary =
+          effectiveMode === 'tiered_expr'
+            ? getDynamicPricingSummary(
+                model,
+                {
+                  tokenUnit,
+                  showRechargePrice,
+                  priceRate,
+                  usdExchangeRate,
+                  groupRatioMultiplier: getDynamicDisplayGroupRatio(
+                    model,
+                    specificGroup
+                  ),
+                },
+                specificGroup
+              )
+            : null
 
         if (dynamicSummary) {
           if (dynamicSummary.isSpecialExpression) {
@@ -309,9 +354,7 @@ export function usePricingColumns(
           )
         }
 
-        const isTokenBased = isTokenBasedModel(model)
-
-        if (!isTokenBased || model.cache_ratio == null) {
+        if (effectiveMode !== 'per-token' || model.cache_ratio == null) {
           return <span className='text-muted-foreground/30 text-xs'>—</span>
         }
 
@@ -322,7 +365,8 @@ export function usePricingColumns(
             tokenUnit,
             showRechargePrice,
             priceRate,
-            usdExchangeRate
+            usdExchangeRate,
+            specificGroup
           )
         )
 

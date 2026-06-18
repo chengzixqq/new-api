@@ -30,13 +30,21 @@ const (
 )
 
 type ChannelOtherSettings struct {
-	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
-	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json" or "api_key"
-	OpenRouterEnterprise                  *bool                 `json:"openrouter_enterprise,omitempty"`
-	ClaudeBetaQuery                       bool                  `json:"claude_beta_query,omitempty"`         // Claude 渠道是否强制追加 ?beta=true
-	AllowServiceTier                      bool                  `json:"allow_service_tier,omitempty"`        // 是否允许 service_tier 透传（默认过滤以避免额外计费）
-	AllowInferenceGeo                     bool                  `json:"allow_inference_geo,omitempty"`       // 是否允许 inference_geo 透传（仅 Claude，默认过滤以满足数据驻留合规
-	AllowSpeed                            bool                  `json:"allow_speed,omitempty"`               // 是否允许 speed 透传（仅 Claude，默认过滤以避免意外切换推理速度模式）
+	AzureResponsesVersion string        `json:"azure_responses_version,omitempty"`
+	VertexKeyType         VertexKeyType `json:"vertex_key_type,omitempty"` // "json" or "api_key"
+	OpenRouterEnterprise  *bool         `json:"openrouter_enterprise,omitempty"`
+	ClaudeBetaQuery       bool          `json:"claude_beta_query,omitempty"`   // Claude 渠道是否强制追加 ?beta=true
+	AllowServiceTier      bool          `json:"allow_service_tier,omitempty"`  // 是否允许 service_tier 透传（默认过滤以避免额外计费）
+	AllowInferenceGeo     bool          `json:"allow_inference_geo,omitempty"` // 是否允许 inference_geo 透传（仅 Claude，默认过滤以满足数据驻留合规
+	AllowSpeed            bool          `json:"allow_speed,omitempty"`         // 是否允许 speed 透传（仅 Claude，默认过滤以避免意外切换推理速度模式）
+	// 是否启用 Cowork/Claude Desktop adaptive thinking 历史签名修复
+	CoworkAdaptiveThinkingFix bool `json:"cowork_adaptive_thinking_fix,omitempty"`
+	// 是否对该渠道启用上游连接预热（进程内定时预热 TCP/TLS/HTTP2 连接，降低首字节延迟）
+	UpstreamWarmupEnabled bool `json:"upstream_warmup_enabled,omitempty"`
+	// 是否对该渠道启用上游请求 httptrace 分段埋点（语义 B：即使全局开关关闭也对该渠道采集）
+	UpstreamTraceEnabled bool `json:"upstream_trace_enabled,omitempty"`
+	// 是否对该渠道强制使用 HTTP/1.1（禁用 HTTP/2），用于规避上游 HTTP/2 RST_STREAM 问题
+	ForceHTTP1                            bool                  `json:"force_http1,omitempty"`
 	AllowSafetyIdentifier                 bool                  `json:"allow_safety_identifier,omitempty"`   // 是否允许 safety_identifier 透传（默认过滤以保护用户隐私）
 	DisableStore                          bool                  `json:"disable_store,omitempty"`             // 是否禁用 store 透传（默认允许透传，禁用后可能导致 Codex 无法使用）
 	AllowIncludeObfuscation               bool                  `json:"allow_include_obfuscation,omitempty"` // 是否允许 stream_options.include_obfuscation 透传（默认过滤以避免关闭流混淆保护）

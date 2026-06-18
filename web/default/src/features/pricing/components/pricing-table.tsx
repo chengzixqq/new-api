@@ -37,6 +37,8 @@ export interface PricingTableProps {
   tokenUnit?: TokenUnit
   showRechargePrice?: boolean
   onModelClick?: (modelName: string) => void
+  /** Currently selected token group; forwarded to columns for per-group pricing. */
+  selectedGroup?: string
 }
 
 export function PricingTable(props: PricingTableProps) {
@@ -49,6 +51,7 @@ export function PricingTable(props: PricingTableProps) {
     tokenUnit = DEFAULT_TOKEN_UNIT,
     showRechargePrice = false,
     onModelClick,
+    selectedGroup,
   } = props
 
   const [pagination, setPagination] = useState<PaginationState>({
@@ -61,6 +64,7 @@ export function PricingTable(props: PricingTableProps) {
     priceRate,
     usdExchangeRate,
     showRechargePrice,
+    selectedGroup,
   })
 
   const { table } = useDataTable({

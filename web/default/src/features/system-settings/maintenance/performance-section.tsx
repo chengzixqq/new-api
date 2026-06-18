@@ -79,6 +79,9 @@ import { safeNumberFieldProps } from '../utils/numeric-field'
  * server-side key format right before persisting.
  */
 const perfSchema = z.object({
+  UpstreamWarmupEnabled: z.boolean(),
+  UpstreamTraceEnabled: z.boolean(),
+  UpstreamTraceSampleRate: z.coerce.number().min(0).max(1),
   performance_setting: z.object({
     disk_cache_enabled: z.boolean(),
     disk_cache_threshold_mb: z.coerce.number().min(1),
@@ -101,6 +104,9 @@ type PerfFormInput = z.input<typeof perfSchema>
 type PerfFormValues = z.output<typeof perfSchema>
 
 type FlatPerfDefaults = {
+  UpstreamWarmupEnabled: boolean
+  UpstreamTraceEnabled: boolean
+  UpstreamTraceSampleRate: number
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number
@@ -116,6 +122,9 @@ type FlatPerfDefaults = {
 }
 
 const buildFormDefaults = (defaults: FlatPerfDefaults): PerfFormInput => ({
+  UpstreamWarmupEnabled: defaults.UpstreamWarmupEnabled,
+  UpstreamTraceEnabled: defaults.UpstreamTraceEnabled,
+  UpstreamTraceSampleRate: defaults.UpstreamTraceSampleRate,
   performance_setting: {
     disk_cache_enabled: defaults['performance_setting.disk_cache_enabled'],
     disk_cache_threshold_mb:
@@ -140,6 +149,9 @@ const buildFormDefaults = (defaults: FlatPerfDefaults): PerfFormInput => ({
 })
 
 const normalizeFormValues = (values: PerfFormValues): FlatPerfDefaults => ({
+  UpstreamWarmupEnabled: values.UpstreamWarmupEnabled,
+  UpstreamTraceEnabled: values.UpstreamTraceEnabled,
+  UpstreamTraceSampleRate: values.UpstreamTraceSampleRate,
   'performance_setting.disk_cache_enabled':
     values.performance_setting.disk_cache_enabled,
   'performance_setting.disk_cache_threshold_mb':
@@ -173,6 +185,11 @@ function formatBytes(bytes: number, decimals = 2): string {
   const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k))
   if (i < 0 || i >= sizes.length) return bytes + ' Bytes'
   return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i]
+}
+
+function formatUnixTime(seconds?: number): string {
+  if (!seconds) return '-'
+  return dayjs.unix(seconds).format('YYYY-MM-DD HH:mm:ss')
 }
 
 interface Props {
@@ -221,6 +238,22 @@ type PerformanceStats = {
   }
 }
 
+type WarmupHostStatus = {
+  host: string
+  proxy?: string
+  last_status_code: number
+  last_latency_ms: number
+  last_error?: string
+  success_count: number
+  failure_count: number
+  last_success_at?: number
+  last_check_at: number
+  connect_success_count?: number
+  reusable_success_count?: number
+  drain_failure_count?: number
+  last_reusable_at?: number
+}
+
 export function PerformanceSection(props: Props) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
@@ -229,6 +262,8 @@ export function PerformanceSection(props: Props) {
   const [logCleanupMode, setLogCleanupMode] = useState('by_count')
   const [logCleanupValue, setLogCleanupValue] = useState(10)
   const [logCleanupLoading, setLogCleanupLoading] = useState(false)
+  const [warmupStatus, setWarmupStatus] = useState<WarmupHostStatus[]>([])
+  const [warmupStatusLoading, setWarmupStatusLoading] = useState(false)
 
   const formDefaults = useMemo(
     () => buildFormDefaults(props.defaultValues),
@@ -271,10 +306,25 @@ export function PerformanceSection(props: Props) {
     }
   }, [])
 
+  const fetchWarmupStatus = useCallback(async () => {
+    setWarmupStatusLoading(true)
+    try {
+      const res = await api.get('/api/channel/upstream_warmup/status')
+      if (res.data.success) {
+        setWarmupStatus(Array.isArray(res.data.data) ? res.data.data : [])
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      setWarmupStatusLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     fetchStats()
     fetchLogInfo()
-  }, [fetchStats, fetchLogInfo])
+    fetchWarmupStatus()
+  }, [fetchStats, fetchLogInfo, fetchWarmupStatus])
 
   const onSubmit = async (values: PerfFormValues) => {
     const normalized = normalizeFormValues(values)
@@ -298,6 +348,7 @@ export function PerformanceSection(props: Props) {
     baselineSerializedRef.current = JSON.stringify(normalized)
     form.reset(buildFormDefaults(normalized))
     fetchStats()
+    fetchWarmupStatus()
   }
 
   const clearDiskCache = async () => {
@@ -367,6 +418,8 @@ export function PerformanceSection(props: Props) {
 
   const diskEnabled = form.watch('performance_setting.disk_cache_enabled')
   const monitorEnabled = form.watch('performance_setting.monitor_enabled')
+  const upstreamWarmupEnabled = form.watch('UpstreamWarmupEnabled')
+  const upstreamTraceEnabled = form.watch('UpstreamTraceEnabled')
   const perfMetricsEnabled = form.watch('perf_metrics_setting.enabled')
   const maxCacheSizeRaw = form.watch(
     'performance_setting.disk_cache_max_size_mb'
@@ -708,6 +761,218 @@ export function PerformanceSection(props: Props) {
                   </FormControl>
                   <FormDescription>
                     {t('0 means data is kept permanently')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <Separator />
+
+          <div className='flex flex-wrap items-center justify-between gap-3'>
+            <div>
+              <h4 className='font-medium'>{t('Upstream connection warmup')}</h4>
+              <p className='text-muted-foreground mt-1 text-xs'>
+                {t(
+                  'Keep selected channel upstream connections ready with non-billable health requests.'
+                )}
+              </p>
+            </div>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={fetchWarmupStatus}
+              disabled={warmupStatusLoading}
+            >
+              {warmupStatusLoading ? t('Refreshing...') : t('Refresh Status')}
+            </Button>
+          </div>
+
+          <FormField
+            control={form.control}
+            name='UpstreamWarmupEnabled'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('Enable upstream warmup task')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Channel-level switches decide which upstream hosts are warmed.'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </SettingsSwitchItem>
+            )}
+          />
+
+          <div className='space-y-3 rounded-lg border p-4'>
+            <div className='flex flex-wrap items-center gap-2'>
+              <p className='text-sm font-medium'>{t('Warmup host status')}</p>
+              <StatusBadge
+                variant={upstreamWarmupEnabled ? 'success' : 'neutral'}
+                copyable={false}
+              >
+                {upstreamWarmupEnabled ? t('Enabled') : t('Disabled')}
+              </StatusBadge>
+            </div>
+            {warmupStatus.length > 0 ? (
+              <div className='grid grid-cols-1 gap-3 lg:grid-cols-2'>
+                {warmupStatus.map((item) => {
+                  const lastCheckAt = item.last_check_at ?? 0
+                  const lastReusableAt =
+                    item.last_reusable_at ?? item.last_success_at ?? 0
+                  const connectSuccessCount =
+                    item.connect_success_count ?? item.success_count ?? 0
+                  const reusableSuccessCount =
+                    item.reusable_success_count ?? item.success_count ?? 0
+                  const drainFailureCount = item.drain_failure_count ?? 0
+                  const latestHasError = Boolean(item.last_error)
+                  const reusable =
+                    reusableSuccessCount > 0 &&
+                    lastReusableAt > 0 &&
+                    lastReusableAt >= lastCheckAt &&
+                    !latestHasError
+                  const drainNotReusable =
+                    latestHasError &&
+                    item.last_status_code > 0 &&
+                    drainFailureCount > 0
+                  const statusVariant = reusable
+                    ? 'success'
+                    : drainNotReusable
+                      ? 'warning'
+                      : latestHasError
+                        ? 'danger'
+                        : 'neutral'
+                  const statusLabel = reusable
+                    ? t('Connection reusable')
+                    : drainNotReusable
+                      ? t('Connection not reusable')
+                      : latestHasError
+                        ? t('Warmup failed')
+                        : t('No reusable connection')
+                  const key = `${item.host}|${item.proxy ?? ''}`
+                  return (
+                    <div key={key} className='space-y-2 rounded-md border p-3'>
+                      <div className='flex items-start justify-between gap-3'>
+                        <div className='min-w-0'>
+                          <p className='truncate text-sm font-medium'>
+                            {item.host}
+                          </p>
+                          {item.proxy ? (
+                            <p className='text-muted-foreground truncate text-xs'>
+                              {item.proxy}
+                            </p>
+                          ) : null}
+                        </div>
+                        <StatusBadge variant={statusVariant} copyable={false}>
+                          {statusLabel}
+                        </StatusBadge>
+                      </div>
+                      <div className='text-muted-foreground grid grid-cols-2 gap-2 text-xs md:grid-cols-3'>
+                        <span>
+                          {t('Business status')}: {item.last_status_code || '-'}
+                        </span>
+                        <span>
+                          {t('Latency')}: {item.last_latency_ms || 0} ms
+                        </span>
+                        <span>
+                          {t('Connect success')}: {connectSuccessCount}
+                        </span>
+                        <span>
+                          {t('Reusable success')}: {reusableSuccessCount}
+                        </span>
+                        <span>
+                          {t('Drain failure')}: {drainFailureCount}
+                        </span>
+                        <span>
+                          {t('Failure')}: {item.failure_count}
+                        </span>
+                        <span>
+                          {t('Last Check')}:{' '}
+                          {formatUnixTime(item.last_check_at)}
+                        </span>
+                        <span>
+                          {t('Last reusable')}: {formatUnixTime(lastReusableAt)}
+                        </span>
+                      </div>
+                      {item.last_error ? (
+                        <p className='text-destructive text-xs break-all'>
+                          {item.last_error}
+                        </p>
+                      ) : null}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className='text-muted-foreground text-sm'>
+                {t('No warmup status yet')}
+              </p>
+            )}
+          </div>
+
+          <Separator />
+
+          <div>
+            <h4 className='font-medium'>{t('Upstream request tracing')}</h4>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t(
+                'Diagnose first-token latency by recording per-stage upstream timing (connection reuse, request upload, response header, first SSE, local flush) into the admin log detail. Off by default; enable only while investigating.'
+              )}
+            </p>
+          </div>
+
+          <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='UpstreamTraceEnabled'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Enable upstream tracing')}</FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Records segmented upstream timing into the admin-visible log detail.'
+                      )}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                </SettingsSwitchItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='UpstreamTraceSampleRate'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Trace sample rate')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={0}
+                      max={1}
+                      step={0.1}
+                      {...safeNumberFieldProps(field)}
+                      disabled={!upstreamTraceEnabled}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      '1 = trace every request, 0 = off. Lower it to reduce log volume under high concurrency.'
+                    )}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

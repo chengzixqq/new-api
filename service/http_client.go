@@ -24,17 +24,17 @@ const (
 )
 
 var (
-	httpClient      *http.Client
-	httpClientH1    *http.Client
-	proxyClientLock sync.Mutex
-	proxyClients    = make(map[string]*http.Client)
-	proxyClientsH1  = make(map[string]*http.Client)
+	httpClient              *http.Client
+	httpClientH1            *http.Client
+	ssrfProtectedHTTPClient *http.Client
+	proxyClientLock         sync.Mutex
+	proxyClients            = make(map[string]*http.Client)
+	proxyClientsH1          = make(map[string]*http.Client)
 )
 
 func checkRedirect(req *http.Request, via []*http.Request) error {
-	fetchSetting := system_setting.GetFetchSetting()
 	urlStr := req.URL.String()
-	if err := common.ValidateURLWithFetchSetting(urlStr, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain); err != nil {
+	if err := validateURLWithCurrentFetchSetting(urlStr, true); err != nil {
 		return fmt.Errorf("redirect to %s blocked: %v", urlStr, err)
 	}
 	if len(via) >= 10 {
@@ -43,12 +43,37 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
+func checkProtectedFetchRedirect(req *http.Request, via []*http.Request) error {
+	urlStr := req.URL.String()
+	if err := ValidateSSRFProtectedFetchURL(urlStr); err != nil {
+		return fmt.Errorf("redirect to %s blocked: %v", urlStr, err)
+	}
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	return nil
+}
+
+func validateURLWithCurrentFetchSetting(urlStr string, applyDomainIPFilter bool) error {
+	fetchSetting := system_setting.GetFetchSetting()
+	return common.ValidateURLWithFetchSetting(urlStr, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, applyDomainIPFilter && fetchSetting.ApplyIPFilterForDomain)
+}
+
+func ValidateSSRFProtectedFetchURL(urlStr string) error {
+	return validateURLWithCurrentFetchSetting(urlStr, true)
+}
+
 func InitHttpClient() {
 	transport, _, _ := buildUpstreamTransport(http.ProxyFromEnvironment, nil)
 	httpClient = buildUpstreamHTTPClient(transport)
 
 	h1Transport := buildUpstreamTransportHTTP1Only(http.ProxyFromEnvironment, nil)
 	httpClientH1 = buildUpstreamHTTPClient(h1Transport)
+
+	// SSRF-protected client for user-controlled URL fetches (see GetSSRFProtectedHTTPClient).
+	// Kept separate from the general upstream client so normal relay/provider traffic is
+	// not forced through the SSRF dialer.
+	ssrfProtectedHTTPClient = newProtectedFetchHTTPClient()
 }
 
 func buildUpstreamTLSConfig() *tls.Config {
@@ -119,12 +144,28 @@ func buildUpstreamHTTPClient(transport *http.Transport) *http.Client {
 	return client
 }
 
+// GetHttpClient returns the general outbound client used by relay/provider
+// integrations. Do not attach the SSRF-protected dialer here: provider base URLs
+// are root/operator-managed deployment targets, not arbitrary user-controlled
+// input, and may legitimately point at private networks, private-link endpoints,
+// self-hosted services, or local proxies. Code paths that fetch arbitrary
+// user-controlled URLs must use GetSSRFProtectedHTTPClient or
+// ValidateSSRFProtectedFetchURL instead.
 func GetHttpClient() *http.Client {
 	return httpClient
 }
 
 func GetHttpClientHTTP1Only() *http.Client {
 	return httpClientH1
+}
+
+// GetSSRFProtectedHTTPClient 返回带拨号时 SSRF 校验的客户端。
+// ssrfProtectedHTTPClient 由 InitHttpClient 在启动时初始化，运行期只读。
+func GetSSRFProtectedHTTPClient() *http.Client {
+	if fetchSetting := system_setting.GetFetchSetting(); fetchSetting != nil && !fetchSetting.EnableSSRFProtection {
+		return GetHttpClient()
+	}
+	return ssrfProtectedHTTPClient
 }
 
 // GetHttpClientWithProxy returns the default client or a proxy-enabled one when proxyURL is provided.

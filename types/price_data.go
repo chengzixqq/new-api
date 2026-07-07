@@ -2,6 +2,7 @@ package types
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -124,7 +125,9 @@ func (p *PriceData) AddOtherRatio(key string, ratio float64) {
 	if p.OtherRatios == nil {
 		p.OtherRatios = make(map[string]float64)
 	}
-	if ratio <= 0 {
+	// NaN/Inf would poison every downstream quota multiplication
+	// (int(NaN * quota) wraps to a negative charge).
+	if !(ratio > 0) || math.IsInf(ratio, 1) {
 		return
 	}
 	p.OtherRatios[key] = ratio

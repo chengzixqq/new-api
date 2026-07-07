@@ -23,7 +23,7 @@ import (
 // 按次计费(UsePrice)时,分组的 model_price 覆盖优先于 info.ModelPrice,
 // 且不再叠乘 GroupRatio。证明覆盖值彻底接管按次计费。
 func TestCalculateAudioQuota_UsePrice_OverrideModelPriceWins(t *testing.T) {
-	got := calculateAudioQuota(QuotaInfo{
+	got, _ := calculateAudioQuota(QuotaInfo{
 		UsePrice:   true,
 		ModelPrice: 99, // 上游价格,必须被忽略
 		GroupRatio: 99, // 覆盖路径不叠乘分组倍率,必须被忽略
@@ -40,7 +40,7 @@ func TestCalculateAudioQuota_TokenPath_AllComponentPricesOverrideRatios(t *testi
 	// 锚定折算前提:期望值按 QuotaPerUnit=500000 推导,若该常量变动需重算。
 	require.Equal(t, 500000.0, common.QuotaPerUnit, "本测试的期望额度基于 QuotaPerUnit=500000")
 
-	got := calculateAudioQuota(QuotaInfo{
+	got, _ := calculateAudioQuota(QuotaInfo{
 		UsePrice:      false,
 		ModelName:     "irrelevant-all-prices-set",
 		ModelRatio:    99, // 全分量覆盖时被忽略
@@ -68,7 +68,7 @@ func TestCalculateAudioQuota_TokenPath_AllComponentPricesOverrideRatios(t *testi
 // CompletionPrice 有值 → 输出文本走覆盖价,忽略 completionRatio。
 // 证明同一次计费里覆盖与倍率回退可以共存。
 func TestCalculateAudioQuota_TokenPath_MixedOverrideAndRatioFallback(t *testing.T) {
-	got := calculateAudioQuota(QuotaInfo{
+	got, _ := calculateAudioQuota(QuotaInfo{
 		UsePrice:      false,
 		ModelName:     "unknown-mixed-x",
 		ModelRatio:    2,
@@ -90,7 +90,7 @@ func TestCalculateAudioQuota_TokenPath_MixedOverrideAndRatioFallback(t *testing.
 // 按量计费时,覆盖价把额度算成 0 但确有 token,则按最低计费 1 处理。
 // PromptPrice 设成指向 0 的指针:HasPriceOverride() 为真(进入覆盖分支),但额度算 0。
 func TestCalculateAudioQuota_TokenPath_OverrideZeroQuotaWithTokensChargesOne(t *testing.T) {
-	got := calculateAudioQuota(QuotaInfo{
+	got, _ := calculateAudioQuota(QuotaInfo{
 		UsePrice:     false,
 		ModelName:    "unknown-min-charge-x",
 		ModelRatio:   2,
@@ -105,7 +105,7 @@ func TestCalculateAudioQuota_TokenPath_OverrideZeroQuotaWithTokensChargesOne(t *
 // Override 为 nil(无分组价格覆盖)时,音频计费完全走上游倍率公式,
 // 定制分支不得泄漏到默认路径。这是「升级维护」最重要的一条安全网。
 func TestCalculateAudioQuota_TokenPath_NilOverrideUsesUpstreamRatioPath(t *testing.T) {
-	got := calculateAudioQuota(QuotaInfo{
+	got, _ := calculateAudioQuota(QuotaInfo{
 		UsePrice:     false,
 		ModelName:    "unknown-baseline-x",
 		ModelRatio:   2,

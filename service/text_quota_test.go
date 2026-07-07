@@ -31,8 +31,10 @@ func TestResponseText2UsageCacheControlFallbackUsesConservativeCacheCreation(t *
 
 	usage := ResponseText2Usage(ctx, "", "claude-3-7-sonnet", 100)
 
+	// usage 缺失但请求带 cache_control 时:不再伪造缓存写入(历史的 input×断点数
+	// 会爆扣),输入按普通输入率计费,cache_control 断点数仅作日志线索。
 	require.Equal(t, 100, usage.PromptTokens)
-	require.Equal(t, 200, usage.PromptTokensDetails.CachedCreationTokens)
+	require.Equal(t, 0, usage.PromptTokensDetails.CachedCreationTokens)
 	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens))
 	require.Equal(t, "local_cache_control_estimate", common.GetContextKeyString(ctx, constant.ContextKeyUsageFallback))
 }
@@ -623,4 +625,68 @@ func TestTryTieredSettleNoClampInRange(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, result)
 	require.Nil(t, relayInfo.QuotaClamp, "in-range settlement must not record a clamp")
+}
+
+// TestApplyLocalCountCacheControlFallbackNoFakeCacheWrite 复刻线上爆扣场景的根因:
+// 上游 usage 缺失、请求带 cache_control(断点数 3)。历史实现会把 CachedCreationTokens
+// 估成 input×3 并按最贵的缓存写入费率计费。新实现不再伪造缓存写入,输入按普通输入计。
+func TestApplyLocalCountCacheControlFallbackNoFakeCacheWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	common.SetContextKey(ctx, constant.ContextKeyLocalCountTokens, true)
+	common.SetContextKey(ctx, constant.ContextKeyRequestHasCacheControl, true)
+	common.SetContextKey(ctx, constant.ContextKeyRequestCacheControlCount, 3)
+
+	usage := &dto.Usage{PromptTokens: 995481}
+	ApplyLocalCountCacheControlFallback(ctx, usage)
+
+	require.Equal(t, 995481, usage.PromptTokens, "真实输入保持不变")
+	require.Equal(t, 0, usage.PromptTokensDetails.CachedCreationTokens, "不再伪造缓存写入(历史 bug: 995481×3)")
+	require.Equal(t, 0, usage.PromptTokensDetails.CachedTokens)
+	require.Equal(t, "local_cache_control_estimate", common.GetContextKeyString(ctx, constant.ContextKeyUsageFallback))
+}
+
+// TestClampEstimatedUsageToObservedInput 验证第二道防线:即便某段估算逻辑仍然伪造出
+// 超过真实输入的缓存 token(模拟历史 bug 或未来回归),clamp 也会把它拉回普通输入率,
+// 保证最坏只按「真实输入 × ×1」计费,不可能爆扣。
+func TestClampEstimatedUsageToObservedInput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	common.SetContextKey(ctx, constant.ContextKeyUsageReliability, "estimated_conservative")
+
+	// 模拟历史爆扣: 输入 995481, 伪造缓存写入 995481×3
+	usage := &dto.Usage{
+		PromptTokens: 995481,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedCreationTokens: 995481 * 3,
+		},
+	}
+	ClampEstimatedUsageToObservedInput(ctx, usage, 995481)
+
+	require.Equal(t, 995481, usage.PromptTokens, "退回真实输入")
+	require.Equal(t, 0, usage.PromptTokensDetails.CachedCreationTokens, "越界的伪造缓存写入被清零")
+	require.Equal(t, 995481, usage.TotalTokens)
+	require.Equal(t, "estimated_usage_clamped_to_observed_input", common.GetContextKeyString(ctx, constant.ContextKeyUsageFallbackReason))
+}
+
+// TestClampEstimatedUsageSkipsTrustedUsage 确认 clamp 绝不触碰上游真实 usage:
+// 未标记 estimated_conservative 时,即使 cache 字段很大也原样保留。
+func TestClampEstimatedUsageSkipsTrustedUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	// 不设置 usage_reliability = estimated_conservative
+
+	usage := &dto.Usage{
+		PromptTokens: 1000,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedCreationTokens: 50000, // 上游真实报告的缓存写入,远超普通输入
+		},
+	}
+	ClampEstimatedUsageToObservedInput(ctx, usage, 1000)
+
+	require.Equal(t, 1000, usage.PromptTokens)
+	require.Equal(t, 50000, usage.PromptTokensDetails.CachedCreationTokens, "真实 usage 不被 clamp 触碰")
 }

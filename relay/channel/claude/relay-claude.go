@@ -851,6 +851,9 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 		}
 		common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
 		service.ApplyLocalCountCacheControlFallback(c, claudeInfo.Usage)
+		// 第二道防线:估算场景下强制「输入侧计费 token 不超过观测到的真实输入」,
+		// 防止任何估算路径失控(如历史的 input×断点数)导致爆扣。
+		service.ClampEstimatedUsageToObservedInput(c, claudeInfo.Usage, claudeInfo.Usage.PromptTokens)
 		claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
 	}
 	if claudeInfo.Usage != nil {

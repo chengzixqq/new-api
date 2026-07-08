@@ -28,7 +28,27 @@ func TestGetRequestBodyMarksCacheControlCount(t *testing.T) {
 	defer storage.Close()
 	require.True(t, GetContextKeyBool(ctx, constant.ContextKeyRequestHasCacheControl))
 	require.Equal(t, 2, GetContextKeyInt(ctx, constant.ContextKeyRequestCacheControlCount))
+	require.False(t, GetContextKeyBool(ctx, constant.ContextKeyRequestHasCacheControl1h))
 
 	_, err = storage.Seek(0, io.SeekStart)
 	require.NoError(t, err)
+}
+
+func TestGetRequestBodyMarksCacheControl1hTTL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Request = httptest.NewRequest("POST", "/v1/messages", bytes.NewBufferString(`{
+		"messages":[
+			{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral","ttl" : "1h"}}]}
+		]
+	}`))
+
+	storage, err := GetBodyStorage(ctx)
+
+	require.NoError(t, err)
+	defer storage.Close()
+	require.True(t, GetContextKeyBool(ctx, constant.ContextKeyRequestHasCacheControl))
+	require.Equal(t, 1, GetContextKeyInt(ctx, constant.ContextKeyRequestCacheControlCount))
+	require.True(t, GetContextKeyBool(ctx, constant.ContextKeyRequestHasCacheControl1h))
 }

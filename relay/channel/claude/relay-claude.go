@@ -840,20 +840,30 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 		if common.DebugEnabled {
 			common.SysLog("claude response usage is not complete, maybe upstream error")
 		}
-		// 只补缺失字段，不整份覆盖——保留 message_start 已拿到的 cache 字段
-		fallback := service.ResponseText2Usage(c, claudeInfo.ResponseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+		// 只补缺失字段，不整份覆盖——保留 message_start 已拿到的 cache 字段。
+		// 用本地 token 计数补 completion,用请求体估算补 prompt。注意:completion 估算不能
+		// 触发 cache_control 兜底(那是输入侧的事),故先取估算值再单独回填,不复用其 usage。
+		completionEstimate := service.EstimateTokenByModel(info.UpstreamModelName, claudeInfo.ResponseText.String())
 		if claudeInfo.Usage.CompletionTokens == 0 ||
-			(!claudeInfo.Done && fallback.CompletionTokens > claudeInfo.Usage.CompletionTokens) {
-			claudeInfo.Usage.CompletionTokens = fallback.CompletionTokens
+			(!claudeInfo.Done && completionEstimate > claudeInfo.Usage.CompletionTokens) {
+			claudeInfo.Usage.CompletionTokens = completionEstimate
 		}
 		if claudeInfo.Usage.PromptTokens == 0 {
-			claudeInfo.Usage.PromptTokens = fallback.PromptTokens
+			claudeInfo.Usage.PromptTokens = info.GetEstimatePromptTokens()
 		}
 		common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
-		service.ApplyLocalCountCacheControlFallback(c, claudeInfo.Usage)
+		observedInput := claudeInfo.Usage.PromptTokens
+		if est := info.GetEstimatePromptTokens(); est > observedInput {
+			observedInput = est
+		}
+		// usage 缺失或仅返回部分输入侧 cache 字段时,按缓存写入率保守补齐,
+		// 而非普通输入(×1),保证「本站收 ≥ 上游扣」。真实 cache 字段完整时此调用不改动。
+		service.ApplyLocalCountCacheControlFallbackWithObservedInput(c, claudeInfo.Usage, observedInput)
 		// 第二道防线:估算场景下强制「输入侧计费 token 不超过观测到的真实输入」,
-		// 防止任何估算路径失控(如历史的 input×断点数)导致爆扣。
-		service.ClampEstimatedUsageToObservedInput(c, claudeInfo.Usage, claudeInfo.Usage.PromptTokens)
+		// 防止任何估算路径失控(如历史的 input×断点数)导致爆扣。上界取「上游 message_start
+		// 已回的真实输入」与「请求体数出的估算输入」的较大者——保守估算已把 PromptTokens
+		// 转记为缓存写入并置 0,若以 usage.PromptTokens 为界会把合理的缓存写入全部误判越界。
+		service.ClampEstimatedUsageToObservedInput(c, claudeInfo.Usage, observedInput)
 		claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
 	}
 	if claudeInfo.Usage != nil {

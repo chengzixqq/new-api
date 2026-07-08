@@ -110,6 +110,9 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	if cacheControlCount := common.GetContextKeyInt(ctx, constant.ContextKeyRequestCacheControlCount); cacheControlCount > 0 {
 		adminInfo["request_cache_control_count"] = cacheControlCount
 	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyRequestHasCacheControl1h) {
+		adminInfo["request_cache_control_1h"] = true
+	}
 	if usageFallback := common.GetContextKeyString(ctx, constant.ContextKeyUsageFallback); usageFallback != "" {
 		adminInfo["usage_fallback"] = usageFallback
 	}

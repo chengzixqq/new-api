@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -212,10 +211,7 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			}
 		}
 
-		if cacheControlCount := bytes.Count(jsonData, []byte(`"cache_control"`)); cacheControlCount > 0 {
-			common.SetContextKey(c, constant.ContextKeyRequestHasCacheControl, true)
-			common.SetContextKey(c, constant.ContextKeyRequestCacheControlCount, cacheControlCount)
-		}
+		common.MarkRequestCacheControlFromBytes(c, jsonData)
 
 		jsonData, fixStats, err := relaycommon.FixCoworkAdaptiveThinkingJSON(jsonData, info.ChannelOtherSettings)
 		if err != nil {

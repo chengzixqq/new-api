@@ -295,7 +295,15 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 
 	summary.PromptTokens = usage.PromptTokens
 	summary.CompletionTokens = usage.CompletionTokens
-	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	// TotalTokens 用作「本次请求是否有可计费 token」的判据(下方多处 TotalTokens==0 ⇒ 免费/
+	// 无法扣费的保护)。缓存读/缓存写入 token 同样是可计费输入,必须计入,否则纯缓存写入
+	// 的请求(如 cache_control 兜底把输入全部转记为缓存写入、PromptTokens 置 0、completion 为空)
+	// 会被误判为空请求而 quota 归零 —— 造成漏扣。
+	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens +
+		usage.PromptTokensDetails.CachedTokens +
+		usage.PromptTokensDetails.CachedCreationTokens +
+		usage.ClaudeCacheCreation5mTokens +
+		usage.ClaudeCacheCreation1hTokens
 	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
 	summary.CacheCreationTokens = usage.PromptTokensDetails.CachedCreationTokens
 	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens

@@ -56,6 +56,7 @@ const (
 
 	ContextKeyRequestHasCacheControl   ContextKey = "request_has_cache_control"
 	ContextKeyRequestCacheControlCount ContextKey = "request_cache_control_count"
+	ContextKeyRequestHasCacheControl1h ContextKey = "request_has_cache_control_1h"
 	ContextKeyUsageFallback            ContextKey = "usage_fallback"
 	ContextKeyUsageFallbackReason      ContextKey = "usage_fallback_reason"
 	ContextKeyUsageReliability         ContextKey = "usage_reliability"

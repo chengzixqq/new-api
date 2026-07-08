@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ const KeyBodyStorage = "key_body_storage"
 
 var ErrRequestBodyTooLarge = errors.New("request body too large")
 var cacheControlMarker = []byte(`"cache_control"`)
+var cacheControlTTL1hPattern = regexp.MustCompile(`"ttl"\s*:\s*"1h"`)
 
 func IsRequestBodyTooLargeError(err error) bool {
 	if err == nil {
@@ -201,59 +203,101 @@ func GetContextKeyType[T any](c *gin.Context, key constant.ContextKey) (T, bool)
 }
 
 func markRequestCacheControlIfPresent(c *gin.Context, storage BodyStorage) {
-	if c == nil || storage == nil || GetContextKeyBool(c, constant.ContextKeyRequestHasCacheControl) {
+	if c == nil || storage == nil {
 		return
 	}
-	if count := storageCacheControlMarkerCount(storage); count > 0 {
+	count, has1h := storageCacheControlDetails(storage)
+	markRequestCacheControlDetails(c, count, has1h)
+}
+
+func MarkRequestCacheControlFromBytes(c *gin.Context, data []byte) {
+	if c == nil || len(data) == 0 {
+		return
+	}
+	count := bytes.Count(data, cacheControlMarker)
+	has1h := count > 0 && cacheControlTTL1hPattern.Match(data)
+	markRequestCacheControlDetails(c, count, has1h)
+}
+
+func markRequestCacheControlDetails(c *gin.Context, count int, has1h bool) {
+	if c == nil || count <= 0 {
+		return
+	}
+	if !GetContextKeyBool(c, constant.ContextKeyRequestHasCacheControl) {
 		SetContextKey(c, constant.ContextKeyRequestHasCacheControl, true)
-		SetContextKey(c, constant.ContextKeyRequestCacheControlCount, count)
+	}
+	SetContextKey(c, constant.ContextKeyRequestCacheControlCount, count)
+	if has1h {
+		SetContextKey(c, constant.ContextKeyRequestHasCacheControl1h, true)
 	}
 }
 
-func storageCacheControlMarkerCount(storage BodyStorage) int {
+func storageCacheControlDetails(storage BodyStorage) (int, bool) {
 	if storage == nil {
-		return 0
+		return 0, false
 	}
 	if !storage.IsDisk() {
 		data, err := storage.Bytes()
 		if err != nil {
-			return 0
+			return 0, false
 		}
-		return bytes.Count(data, cacheControlMarker)
+		count := bytes.Count(data, cacheControlMarker)
+		return count, count > 0 && cacheControlTTL1hPattern.Match(data)
 	}
 
 	current, err := storage.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	defer func() {
 		_, _ = storage.Seek(current, io.SeekStart)
 	}()
 	if _, err = storage.Seek(0, io.SeekStart); err != nil {
-		return 0
+		return 0, false
 	}
 
 	count := 0
-	overlap := make([]byte, 0, len(cacheControlMarker)-1)
+	has1h := false
+	countOverlap := make([]byte, 0, len(cacheControlMarker)-1)
+	ttlOverlapKeep := 128
+	ttlOverlap := make([]byte, 0, ttlOverlapKeep)
 	buf := make([]byte, 64*1024)
 	for {
 		n, readErr := storage.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			if len(overlap) > 0 {
-				window := make([]byte, 0, len(overlap)+len(chunk))
-				window = append(window, overlap...)
-				window = append(window, chunk...)
-				count += bytes.Count(window, cacheControlMarker)
+			if len(countOverlap) > 0 {
+				countWindow := make([]byte, 0, len(countOverlap)+len(chunk))
+				countWindow = append(countWindow, countOverlap...)
+				countWindow = append(countWindow, chunk...)
+				count += bytes.Count(countWindow, cacheControlMarker)
 			} else {
 				count += bytes.Count(chunk, cacheControlMarker)
 			}
+			if !has1h {
+				if len(ttlOverlap) > 0 {
+					ttlWindow := make([]byte, 0, len(ttlOverlap)+len(chunk))
+					ttlWindow = append(ttlWindow, ttlOverlap...)
+					ttlWindow = append(ttlWindow, chunk...)
+					has1h = cacheControlTTL1hPattern.Match(ttlWindow)
+				} else {
+					has1h = cacheControlTTL1hPattern.Match(chunk)
+				}
+			}
 			if keep := len(cacheControlMarker) - 1; len(chunk) >= keep {
-				overlap = append(overlap[:0], chunk[len(chunk)-keep:]...)
+				countOverlap = append(countOverlap[:0], chunk[len(chunk)-keep:]...)
 			} else {
-				overlap = append(overlap, chunk...)
-				if keep := len(cacheControlMarker) - 1; len(overlap) > keep {
-					overlap = overlap[len(overlap)-keep:]
+				countOverlap = append(countOverlap, chunk...)
+				if keep := len(cacheControlMarker) - 1; len(countOverlap) > keep {
+					countOverlap = countOverlap[len(countOverlap)-keep:]
+				}
+			}
+			if len(chunk) >= ttlOverlapKeep {
+				ttlOverlap = append(ttlOverlap[:0], chunk[len(chunk)-ttlOverlapKeep:]...)
+			} else {
+				ttlOverlap = append(ttlOverlap, chunk...)
+				if len(ttlOverlap) > ttlOverlapKeep {
+					ttlOverlap = ttlOverlap[len(ttlOverlap)-ttlOverlapKeep:]
 				}
 			}
 		}
@@ -261,10 +305,10 @@ func storageCacheControlMarkerCount(storage BodyStorage) int {
 			break
 		}
 		if readErr != nil {
-			return 0
+			return 0, false
 		}
 	}
-	return count
+	return count, count > 0 && has1h
 }
 
 func ApiError(c *gin.Context, err error) {

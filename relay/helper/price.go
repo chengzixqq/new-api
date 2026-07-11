@@ -36,6 +36,11 @@ func modelPriceNotConfiguredError(modelName string, userId int) error {
 // https://docs.claude.com/en/docs/build-with-claude/prompt-caching#1-hour-cache-duration
 const claudeCacheCreation1hMultiplier = 6 / 3.75
 
+// defaultTieredPreConsumeMaxTokens is the fallback completion-token estimate
+// used for tiered expression pre-consume when the client omits max_tokens, so
+// the pre-consumed quota still reflects a plausible output cost in paid groups.
+const defaultTieredPreConsumeMaxTokens = 8192
+
 // HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
 func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.GroupRatioInfo {
 	groupRatioInfo := types.GroupRatioInfo{
@@ -114,41 +119,72 @@ func computeMinQuota(override *types.ModelGroupPricing, modelName string, groupR
 	return 0
 }
 
-func applyTokenPriceOverrides(priceData *types.PriceData, promptTokens int) {
+func applyTokenPriceOverrides(priceData *types.PriceData, promptTokens int, completionTokens int) error {
 	if priceData == nil || priceData.GroupPriceOverride == nil || priceData.UsePrice {
-		return
+		return nil
 	}
 	override := priceData.GroupPriceOverride
-	if override.PromptPrice == nil {
-		return
+	if override.PromptPrice == nil && override.CompletionPrice == nil {
+		return nil
 	}
-	preConsumedTokens := float64(promptTokens)
-	if preConsumedTokens <= 0 {
-		return
+	estimatedPromptTokens := common.Max(promptTokens, common.PreConsumedQuota)
+	if completionTokens < 0 {
+		completionTokens = 0
 	}
-	priceData.QuotaToPreConsume = int(decimal.NewFromFloat(preConsumedTokens).
-		Mul(decimal.NewFromFloat(priceToQuotaPerToken(*override.PromptPrice))).
-		Ceil().
-		IntPart())
-	if priceData.QuotaToPreConsume == 0 && *override.PromptPrice > 0 {
+
+	promptTokenDecimal := decimal.NewFromInt(int64(estimatedPromptTokens))
+	completionTokenDecimal := decimal.NewFromInt(int64(completionTokens))
+	quotaDecimal := decimal.Zero
+	if override.PromptPrice != nil {
+		quotaDecimal = quotaDecimal.Add(promptTokenDecimal.Mul(decimal.NewFromFloat(priceToQuotaPerToken(*override.PromptPrice))))
+	} else {
+		quotaDecimal = quotaDecimal.Add(promptTokenDecimal.
+			Mul(decimal.NewFromFloat(priceData.ModelRatio)).
+			Mul(decimal.NewFromFloat(priceData.GroupRatioInfo.GroupRatio)))
+	}
+	if override.CompletionPrice != nil {
+		quotaDecimal = quotaDecimal.Add(completionTokenDecimal.Mul(decimal.NewFromFloat(priceToQuotaPerToken(*override.CompletionPrice))))
+	} else {
+		quotaDecimal = quotaDecimal.Add(completionTokenDecimal.
+			Mul(decimal.NewFromFloat(priceData.ModelRatio)).
+			Mul(decimal.NewFromFloat(priceData.CompletionRatio)).
+			Mul(decimal.NewFromFloat(priceData.GroupRatioInfo.GroupRatio)))
+	}
+	quotaDecimal = quotaDecimal.Ceil()
+	quotaFloat, _ := quotaDecimal.Float64()
+	quota, err := common.QuotaFromFloatStrict(quotaFloat)
+	if err != nil {
+		return err
+	}
+	if priceData.MinQuota > quota {
+		quota = priceData.MinQuota
+	}
+	priceData.QuotaToPreConsume = quota
+	if priceData.QuotaToPreConsume == 0 && quotaDecimal.IsPositive() {
 		priceData.QuotaToPreConsume = 1
 	}
+	return nil
 }
 
-func applyPerCallPriceOverrides(priceData *types.PriceData) {
+func applyPerCallPriceOverrides(priceData *types.PriceData) error {
 	if priceData == nil || priceData.GroupPriceOverride == nil || !priceData.UsePrice {
-		return
+		return nil
 	}
 	if priceData.GroupPriceOverride.ModelPrice == nil {
-		return
+		return nil
 	}
 	priceData.ModelPrice = *priceData.GroupPriceOverride.ModelPrice
-	priceData.Quota = int(priceData.ModelPrice * common.QuotaPerUnit)
+	quota, err := common.QuotaFromFloatStrict(priceData.ModelPrice * common.QuotaPerUnit)
+	if err != nil {
+		return err
+	}
+	priceData.Quota = quota
 	priceData.QuotaToPreConsume = priceData.Quota
 	if priceData.Quota == 0 && priceData.ModelPrice > 0 {
 		priceData.Quota = 1
 		priceData.QuotaToPreConsume = 1
 	}
+	return nil
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (types.PriceData, error) {
@@ -221,12 +257,15 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		audioRatio = ratio_setting.GetAudioRatio(info.OriginModelName)
 		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(info.OriginModelName)
 		ratio := modelRatio * groupRatioInfo.GroupRatio
-		preConsumedQuota = common.QuotaFromFloat(float64(preConsumedTokens) * ratio)
+		quota, err := common.QuotaFromFloatStrict(float64(preConsumedTokens) * ratio)
+		if err != nil {
+			return types.PriceData{}, err
+		}
+		preConsumedQuota = quota
 	} else {
 		if meta.ImagePriceRatio != 0 {
 			modelPrice = modelPrice * meta.ImagePriceRatio
 		}
-		preConsumedQuota = common.QuotaFromFloat(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 	}
 
 	// check if free model pre-consume is disabled
@@ -268,8 +307,29 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	if !usePrice {
 		priceData.MinQuota = computeMinQuota(groupRatioInfo.ModelGroupPricing, info.OriginModelName, groupRatioInfo.GroupRatio)
 	}
-	applyTokenPriceOverrides(&priceData, preConsumedTokens)
-	applyPerCallPriceOverrides(&priceData)
+	if usePrice {
+		for name, ratio := range meta.BillingRatios {
+			priceData.AddOtherRatio(name, ratio)
+		}
+	}
+	if err := applyTokenPriceOverrides(&priceData, promptTokens, meta.MaxTokens); err != nil {
+		return types.PriceData{}, err
+	}
+	if err := applyPerCallPriceOverrides(&priceData); err != nil {
+		return types.PriceData{}, err
+	}
+	if usePrice {
+		preConsumeGroupRatio := groupRatioInfo.GroupRatio
+		if priceData.GroupPriceOverride != nil && priceData.GroupPriceOverride.ModelPrice != nil {
+			preConsumeGroupRatio = 1
+		}
+		quotaToPreConsume := priceData.ApplyOtherRatiosToFloat(priceData.ModelPrice * common.QuotaPerUnit * preConsumeGroupRatio)
+		quota, err := common.QuotaFromFloatStrict(quotaToPreConsume)
+		if err != nil {
+			return types.PriceData{}, err
+		}
+		priceData.QuotaToPreConsume = quota
+	}
 
 	if common.DebugEnabled {
 		logger.LogDebug(c, "model_price_helper result: %s", priceData.ToSetting())
@@ -317,7 +377,11 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (types
 	freeModel := false
 
 	if usePrice {
-		quota = common.QuotaFromFloat(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+		var err error
+		quota, err = common.QuotaFromFloatStrict(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+		if err != nil {
+			return types.PriceData{}, err
+		}
 		if !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume {
 			if groupRatioInfo.GroupRatio == 0 || modelPrice == 0 {
 				quota = 0
@@ -326,7 +390,11 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (types
 		}
 	} else {
 		// 按量计费：以模型倍率的一半作为预扣额度
-		quota = common.QuotaFromFloat(modelRatio / 2 * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+		var err error
+		quota, err = common.QuotaFromFloatStrict(modelRatio / 2 * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+		if err != nil {
+			return types.PriceData{}, err
+		}
 		modelPrice = -1
 		if !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume {
 			if groupRatioInfo.GroupRatio == 0 || modelRatio == 0 {
@@ -354,7 +422,9 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (types
 		priceData.Quota = 0
 		priceData.QuotaToPreConsume = 0
 	}
-	applyPerCallPriceOverrides(&priceData)
+	if err := applyPerCallPriceOverrides(&priceData); err != nil {
+		return types.PriceData{}, err
+	}
 	return priceData, nil
 }
 
@@ -382,9 +452,9 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 		}
 	}
 
-	estimatedCompletionTokens := 0
-	if meta.MaxTokens != 0 {
-		estimatedCompletionTokens = meta.MaxTokens
+	estimatedCompletionTokens := meta.MaxTokens
+	if estimatedCompletionTokens == 0 && groupRatioInfo.GroupRatio != 0 {
+		estimatedCompletionTokens = defaultTieredPreConsumeMaxTokens
 	}
 
 	requestInput, err := ResolveIncomingBillingExprRequestInput(c, info)
@@ -403,7 +473,10 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 
 	// Expression coefficients are $/1M tokens prices; convert to quota the same way per-call billing does.
 	quotaBeforeGroup := rawCost / 1_000_000 * common.QuotaPerUnit
-	preConsumedQuota := billingexpr.QuotaRound(quotaBeforeGroup * groupRatioInfo.GroupRatio)
+	preConsumedQuota, err := billingexpr.QuotaRoundStrict(quotaBeforeGroup * groupRatioInfo.GroupRatio)
+	if err != nil {
+		return types.PriceData{}, err
+	}
 
 	freeModel := false
 	if !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume {

@@ -564,6 +564,7 @@ type ClaudeUsage struct {
 	ClaudeCacheCreation5mTokens int                  `json:"claude_cache_creation_5_m_tokens"`
 	ClaudeCacheCreation1hTokens int                  `json:"claude_cache_creation_1_h_tokens"`
 	ServerToolUse               *ClaudeServerToolUse `json:"server_tool_use,omitempty"`
+	BillingUsage                *BillingUsage        `json:"billing_usage,omitempty"`
 }
 
 type ClaudeCacheCreationUsage struct {
@@ -589,10 +590,29 @@ func (u *ClaudeUsage) GetCacheCreationTotalTokens() int {
 	if u == nil {
 		return 0
 	}
-	if u.CacheCreationInputTokens > 0 {
-		return u.CacheCreationInputTokens
+	cacheCreationTotal := u.CacheCreationInputTokens
+	if cacheCreationTotal < 0 {
+		cacheCreationTotal = 0
 	}
-	return u.GetCacheCreation5mTokens() + u.GetCacheCreation1hTokens()
+	cacheCreation5m := u.GetCacheCreation5mTokens()
+	if cacheCreation5m < 0 {
+		cacheCreation5m = 0
+	}
+	cacheCreation1h := u.GetCacheCreation1hTokens()
+	if cacheCreation1h < 0 {
+		cacheCreation1h = 0
+	}
+	maxInt := int(^uint(0) >> 1)
+	splitTotal := cacheCreation5m
+	if splitTotal > maxInt-cacheCreation1h {
+		splitTotal = maxInt
+	} else {
+		splitTotal += cacheCreation1h
+	}
+	if splitTotal > cacheCreationTotal {
+		return splitTotal
+	}
+	return cacheCreationTotal
 }
 
 type ClaudeServerToolUse struct {

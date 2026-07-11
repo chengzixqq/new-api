@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { type ColumnDef } from '@tanstack/react-table'
+import type { ColumnDef } from '@tanstack/react-table'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -28,7 +28,7 @@ import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge } from '@/components/status-badge'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
-import { DEFAULT_TOKEN_UNIT, FILTER_ALL, QUOTA_TYPE_VALUES } from '../constants'
+import { DEFAULT_TOKEN_UNIT, FILTER_ALL } from '../constants'
 import {
   getDynamicDisplayGroupRatio,
   getDynamicPricingSummary,
@@ -42,6 +42,7 @@ import {
   stripTrailingZeros,
 } from '../lib/price'
 import type { PricingModel, TokenUnit } from '../types'
+import { ModelBillingModeBadge } from './model-billing-mode-badge'
 
 // ----------------------------------------------------------------------------
 // Pricing Table Columns
@@ -74,14 +75,15 @@ export function usePricingColumns(
   // otherwise fall back to the model-level mode.
   const getEffectiveMode = (
     model: PricingModel
-  ): 'per-token' | 'per-request' | 'tiered_expr' =>
-    specificGroup
-      ? resolveGroupBillingMode(model, specificGroup)
-      : model.billing_mode === 'tiered_expr' && Boolean(model.billing_expr)
-        ? 'tiered_expr'
-        : isTokenBasedModel(model)
-          ? 'per-token'
-          : 'per-request'
+  ): 'per-token' | 'per-request' | 'tiered_expr' => {
+    if (specificGroup) {
+      return resolveGroupBillingMode(model, specificGroup)
+    }
+    if (model.billing_mode === 'tiered_expr' && Boolean(model.billing_expr)) {
+      return 'tiered_expr'
+    }
+    return isTokenBasedModel(model) ? 'per-token' : 'per-request'
+  }
   const tokenUnitLabel = tokenUnit === 'K' ? '1K' : '1M'
 
   return [
@@ -113,18 +115,10 @@ export function usePricingColumns(
     {
       accessorKey: 'quota_type',
       header: t('Type'),
-      cell: ({ row }) => {
-        const isTokenBased = row.original.quota_type === QUOTA_TYPE_VALUES.TOKEN
-        return (
-          <StatusBadge
-            label={isTokenBased ? t('Token') : t('Request')}
-            variant={isTokenBased ? 'info' : 'neutral'}
-            copyable={false}
-            className='-ml-1.5'
-          />
-        )
-      },
-      size: 80,
+      cell: ({ row }) => (
+        <ModelBillingModeBadge model={row.original} className='-ml-1.5' />
+      ),
+      size: 110,
       enableSorting: false,
     },
 

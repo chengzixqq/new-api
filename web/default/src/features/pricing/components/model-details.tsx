@@ -47,8 +47,8 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TableCell, TableRow } from '@/components/ui/table'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getPerfMetrics } from '@/features/performance-metrics/api'
 import {
   formatLatency,
@@ -61,7 +61,7 @@ import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { DEFAULT_TOKEN_UNIT, QUOTA_TYPE_VALUES } from '../constants'
+import { DEFAULT_TOKEN_UNIT } from '../constants'
 import { usePricingData } from '../hooks/use-pricing-data'
 import {
   getDynamicPriceEntries,
@@ -85,6 +85,7 @@ import type {
   TokenUnit,
 } from '../types'
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
+import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelDetailsApi } from './model-details-api'
 import { ModelDetailsPerformance } from './model-details-performance'
 import { ModelPricingAdminPanel } from './model-pricing-admin'
@@ -127,6 +128,7 @@ const MODALITY_LABEL_KEYS: Record<string, string> = {
 const TOKEN_FORMAT = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 1,
 })
+const MODEL_DETAILS_SKELETON_KEYS = ['first', 'second', 'third', 'fourth']
 
 function formatCatalogTokenCount(tokens: number): string {
   if (!Number.isFinite(tokens) || tokens <= 0) return ''
@@ -469,11 +471,7 @@ function ModelBackendProviderSection(props: { model: PricingModel }) {
 
   cells.push(
     <CatalogInfoCell key='type' label={t('Type')}>
-      <CatalogTextValue>
-        {model.quota_type === QUOTA_TYPE_VALUES.TOKEN
-          ? t('Token-based')
-          : t('Per Request')}
-      </CatalogTextValue>
+      <ModelBillingModeBadge model={model} />
     </CatalogInfoCell>
   )
 
@@ -541,10 +539,6 @@ function ModelHeader(props: { model: PricingModel }) {
   const modelIconKey = model.icon || model.vendor_icon
   const modelIcon = modelIconKey ? getLobeIcon(modelIconKey, 20) : null
   const description = model.description || model.vendor_description || null
-  const isSpecialExpression =
-    model.billing_mode === 'tiered_expr' &&
-    Boolean(model.billing_expr) &&
-    getDynamicPricingTiers(model).length === 0
 
   return (
     <header className='pb-4'>
@@ -567,21 +561,7 @@ function ModelHeader(props: { model: PricingModel }) {
           <span className='text-muted-foreground'>{model.vendor_name}</span>
         )}
         <span className='text-muted-foreground/30'>·</span>
-        <span className='text-muted-foreground/70'>
-          {model.quota_type === QUOTA_TYPE_VALUES.TOKEN
-            ? t('Token-based')
-            : t('Per Request')}
-        </span>
-        {model.billing_mode === 'tiered_expr' && model.billing_expr && (
-          <>
-            <span className='text-muted-foreground/30'>·</span>
-            <span className='rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'>
-              {isSpecialExpression
-                ? t('Special billing expression')
-                : t('Dynamic Pricing')}
-            </span>
-          </>
-        )}
+        <ModelBillingModeBadge model={model} />
       </div>
       {description && (
         <p className='text-muted-foreground mt-2 text-sm leading-relaxed'>
@@ -849,13 +829,13 @@ function getDynamicPriceFields(
   tiers: DynamicPricingTier[],
   options: DynamicPriceOptions
 ) {
-  return Array.from(
-    new Map(
+  return [
+    ...new Map(
       tiers
         .flatMap((tier) => getDynamicPriceEntries(tier, options))
         .map((entry) => [entry.field, entry])
-    ).values()
-  )
+    ).values(),
+  ]
 }
 
 function getDynamicFormattedPricesByTier(
@@ -900,45 +880,52 @@ function GroupPricingSection(props: {
   const isTokenBased = isTokenBasedModel(props.model)
   const tokenUnitLabel = props.tokenUnit === 'K' ? '1K' : '1M'
 
-  const hasOverridePrice = (type: PriceType) => {
-    const keyByType: Record<PriceType, string> = {
-      input: 'prompt_price',
-      output: 'completion_price',
-      cache: 'cache_price',
-      create_cache: 'create_cache_price',
-      image: 'image_price',
-      audio_input: 'audio_price',
-      audio_output: 'audio_completion_price',
-    }
-    const key = keyByType[type]
-    return Object.values(props.model.group_pricing || {}).some((item) => {
-      if (!item || typeof item !== 'object') return false
-      const value = item[key as keyof typeof item]
-      return (
-        value !== undefined && value !== null && Number.isFinite(Number(value))
-      )
-    })
-  }
-
   const extraPriceTypes = useMemo(() => {
+    const hasOverridePrice = (type: PriceType) => {
+      const keyByType: Record<PriceType, string> = {
+        input: 'prompt_price',
+        output: 'completion_price',
+        cache: 'cache_price',
+        create_cache: 'create_cache_price',
+        image: 'image_price',
+        audio_input: 'audio_price',
+        audio_output: 'audio_completion_price',
+      }
+      const key = keyByType[type]
+      return Object.values(props.model.group_pricing || {}).some((item) => {
+        if (!item || typeof item !== 'object') return false
+        const value = item[key as keyof typeof item]
+        return (
+          value !== undefined &&
+          value !== null &&
+          Number.isFinite(Number(value))
+        )
+      })
+    }
+
     const types: { label: string; type: PriceType }[] = []
-    if (props.model.cache_ratio != null || hasOverridePrice('cache'))
+    if (props.model.cache_ratio != null || hasOverridePrice('cache')) {
       types.push({ label: t('Cache'), type: 'cache' })
+    }
     if (
       props.model.create_cache_ratio != null ||
       hasOverridePrice('create_cache')
-    )
+    ) {
       types.push({ label: t('Cache Write'), type: 'create_cache' })
-    if (props.model.image_ratio != null || hasOverridePrice('image'))
+    }
+    if (props.model.image_ratio != null || hasOverridePrice('image')) {
       types.push({ label: t('Image'), type: 'image' })
-    if (props.model.audio_ratio != null || hasOverridePrice('audio_input'))
+    }
+    if (props.model.audio_ratio != null || hasOverridePrice('audio_input')) {
       types.push({ label: t('Audio In'), type: 'audio_input' })
+    }
     if (
       (props.model.audio_ratio != null &&
         props.model.audio_completion_ratio != null) ||
       hasOverridePrice('audio_output')
-    )
+    ) {
       types.push({ label: t('Audio Out'), type: 'audio_output' })
+    }
     return types
   }, [props.model, t])
 
@@ -1153,6 +1140,56 @@ function GroupPricingSection(props: {
           )
           const groupMode = resolveGroupBillingMode(props.model, group)
           const priceColSpan = isTokenBased ? 2 + extraPriceTypes.length : 1
+          let pricingCells: React.ReactNode
+          if (groupMode === 'per-request') {
+            pricingCells = (
+              <TableCell
+                colSpan={priceColSpan}
+                className='py-2.5 text-right font-mono'
+              >
+                {renderFixedGroupPrice(group)}
+                <span className='text-muted-foreground/40 ml-1 text-xs font-normal'>
+                  / {t('request')}
+                </span>
+              </TableCell>
+            )
+          } else if (groupMode === 'tiered_expr') {
+            pricingCells = (
+              <TableCell colSpan={priceColSpan} className='py-2.5 text-right'>
+                <span className='text-xs font-medium text-amber-700 dark:text-amber-300'>
+                  {t('Dynamic Pricing')}
+                </span>
+              </TableCell>
+            )
+          } else if (isTokenBased) {
+            pricingCells = (
+              <>
+                <TableCell className='py-2.5 text-right font-mono'>
+                  {renderGroupPrice(group, 'input')}
+                </TableCell>
+                <TableCell className='py-2.5 text-right font-mono'>
+                  {renderGroupPrice(group, 'output')}
+                </TableCell>
+                {extraPriceTypes.map((ep) => (
+                  <TableCell
+                    key={ep.type}
+                    className='py-2.5 text-right font-mono'
+                  >
+                    {renderGroupPrice(group, ep.type)}
+                  </TableCell>
+                ))}
+              </>
+            )
+          } else {
+            pricingCells = (
+              <TableCell className='py-2.5 text-right font-mono'>
+                {renderGroupPrice(group, 'input')}
+                <span className='text-muted-foreground/40 mx-1'>/</span>
+                {renderGroupPrice(group, 'output')}
+              </TableCell>
+            )
+          }
+
           return (
             <TableRow key={group}>
               <TableCell className='py-2.5'>
@@ -1161,49 +1198,7 @@ function GroupPricingSection(props: {
               <TableCell className='text-muted-foreground py-2.5 font-mono'>
                 {ratio}x
               </TableCell>
-              {groupMode === 'per-request' ? (
-                <TableCell
-                  colSpan={priceColSpan}
-                  className='py-2.5 text-right font-mono'
-                >
-                  {renderFixedGroupPrice(group)}
-                  <span className='text-muted-foreground/40 ml-1 text-xs font-normal'>
-                    / {t('request')}
-                  </span>
-                </TableCell>
-              ) : groupMode === 'tiered_expr' ? (
-                <TableCell
-                  colSpan={priceColSpan}
-                  className='py-2.5 text-right'
-                >
-                  <span className='text-xs font-medium text-amber-700 dark:text-amber-300'>
-                    {t('Dynamic Pricing')}
-                  </span>
-                </TableCell>
-              ) : isTokenBased ? (
-                <>
-                  <TableCell className='py-2.5 text-right font-mono'>
-                    {renderGroupPrice(group, 'input')}
-                  </TableCell>
-                  <TableCell className='py-2.5 text-right font-mono'>
-                    {renderGroupPrice(group, 'output')}
-                  </TableCell>
-                  {extraPriceTypes.map((ep) => (
-                    <TableCell
-                      key={ep.type}
-                      className='py-2.5 text-right font-mono'
-                    >
-                      {renderGroupPrice(group, ep.type)}
-                    </TableCell>
-                  ))}
-                </>
-              ) : (
-                <TableCell className='py-2.5 text-right font-mono'>
-                  {renderGroupPrice(group, 'input')}
-                  <span className='text-muted-foreground/40 mx-1'>/</span>
-                  {renderGroupPrice(group, 'output')}
-                </TableCell>
-              )}
+              {pricingCells}
             </TableRow>
           )
         }}
@@ -1401,13 +1396,13 @@ export function ModelDetails() {
             <Skeleton className='h-4 w-full max-w-md' />
           </div>
           <div className='mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4'>
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className='h-16 w-full' />
+            {MODEL_DETAILS_SKELETON_KEYS.map((key) => (
+              <Skeleton key={`metric-${key}`} className='h-16 w-full' />
             ))}
           </div>
           <div className='mt-6 space-y-3'>
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className='h-24 w-full' />
+            {MODEL_DETAILS_SKELETON_KEYS.map((key) => (
+              <Skeleton key={`section-${key}`} className='h-24 w-full' />
             ))}
           </div>
         </div>

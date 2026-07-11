@@ -40,6 +40,17 @@ type QuotaInfo struct {
 	Override      *types.ModelGroupPricing
 }
 
+func audioChargeableTokenCount(inputTokens int, outputTokens int, info QuotaInfo) int {
+	aggregateTokens := saturatingPositiveTokenSum(inputTokens, outputTokens)
+	detailTokens := saturatingPositiveTokenSum(
+		info.InputDetails.TextTokens,
+		info.InputDetails.AudioTokens,
+		info.OutputDetails.TextTokens,
+		info.OutputDetails.AudioTokens,
+	)
+	return maxPositiveTokenCount(aggregateTokens, detailTokens)
+}
+
 func hasCustomModelRatio(modelName string, currentRatio float64) bool {
 	defaultRatio, exists := ratio_setting.GetDefaultModelRatioMap()[modelName]
 	if !exists {
@@ -75,10 +86,10 @@ func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 	modelRatio := decimal.NewFromFloat(info.ModelRatio)
 	ratio := groupRatio.Mul(modelRatio)
 
-	inputTextTokens := decimal.NewFromInt(int64(info.InputDetails.TextTokens))
-	outputTextTokens := decimal.NewFromInt(int64(info.OutputDetails.TextTokens))
-	inputAudioTokens := decimal.NewFromInt(int64(info.InputDetails.AudioTokens))
-	outputAudioTokens := decimal.NewFromInt(int64(info.OutputDetails.AudioTokens))
+	inputTextTokens := decimal.NewFromInt(int64(positiveTokenCount(info.InputDetails.TextTokens)))
+	outputTextTokens := decimal.NewFromInt(int64(positiveTokenCount(info.OutputDetails.TextTokens)))
+	inputAudioTokens := decimal.NewFromInt(int64(positiveTokenCount(info.InputDetails.AudioTokens)))
+	outputAudioTokens := decimal.NewFromInt(int64(positiveTokenCount(info.OutputDetails.AudioTokens)))
 
 	quota := decimal.Zero
 	if info.Override != nil && info.Override.HasPriceOverride() {
@@ -239,7 +250,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		quota = tieredQuota
 	}
 
-	totalTokens := usage.TotalTokens
+	chargeableTokens := audioChargeableTokenCount(usage.InputTokens, usage.OutputTokens, quotaInfo)
 	var logContent string
 	if !usePrice {
 		logContent = fmt.Sprintf("模型倍率 %.2f，补全倍率 %.2f，音频倍率 %.2f，音频补全倍率 %.2f，分组倍率 %.2f",
@@ -249,7 +260,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	}
 
 	// record all the consume log even if quota is 0
-	if totalTokens == 0 {
+	if chargeableTokens == 0 {
 		// in this case, must be some error happened
 		// we cannot just return, because we may have to return the pre-consumed quota
 		quota = 0
@@ -363,7 +374,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		quota = tieredQuota
 	}
 
-	totalTokens := usage.TotalTokens
+	chargeableTokens := audioChargeableTokenCount(usage.PromptTokens, usage.CompletionTokens, quotaInfo)
 	var logContent string
 	if !usePrice {
 		logContent = fmt.Sprintf("模型倍率 %.2f，补全倍率 %.2f，音频倍率 %.2f，音频补全倍率 %.2f，分组倍率 %.2f",
@@ -373,7 +384,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	}
 
 	// record all the consume log even if quota is 0
-	if totalTokens == 0 {
+	if chargeableTokens == 0 {
 		// in this case, must be some error happened
 		// we cannot just return, because we may have to return the pre-consumed quota
 		quota = 0

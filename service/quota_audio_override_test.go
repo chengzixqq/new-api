@@ -117,3 +117,34 @@ func TestCalculateAudioQuota_TokenPath_NilOverrideUsesUpstreamRatioPath(t *testi
 	// 上游路径:quota = 1000(输入文本) * (groupRatio*modelRatio = 3*2 = 6) = 6000
 	require.Equal(t, 6000, got)
 }
+
+func TestCalculateAudioQuota_NegativeTokensCannotOffsetPositiveUsage(t *testing.T) {
+	got, _ := calculateAudioQuota(QuotaInfo{
+		UsePrice:      false,
+		ModelName:     "negative-audio-usage",
+		ModelRatio:    2,
+		GroupRatio:    3,
+		InputDetails:  TokenDetails{TextTokens: 1000, AudioTokens: -5000},
+		OutputDetails: TokenDetails{TextTokens: -2000, AudioTokens: -3000},
+	})
+
+	require.Equal(t, 6000, got)
+}
+
+func TestAudioChargeableTokenCountUsesDetailsAndSaturates(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+
+	require.Equal(t, 42, audioChargeableTokenCount(0, 0, QuotaInfo{
+		InputDetails: TokenDetails{AudioTokens: 42},
+	}))
+	require.Equal(t, 100, audioChargeableTokenCount(70, 30, QuotaInfo{
+		InputDetails: TokenDetails{TextTokens: 10},
+	}))
+	require.Equal(t, maxInt, audioChargeableTokenCount(maxInt, maxInt, QuotaInfo{
+		InputDetails: TokenDetails{TextTokens: maxInt, AudioTokens: maxInt},
+	}))
+	require.Zero(t, audioChargeableTokenCount(-1, -2, QuotaInfo{
+		InputDetails:  TokenDetails{TextTokens: -3, AudioTokens: -4},
+		OutputDetails: TokenDetails{TextTokens: -5, AudioTokens: -6},
+	}))
+}

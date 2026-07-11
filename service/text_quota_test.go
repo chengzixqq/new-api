@@ -118,6 +118,12 @@ func TestQuotaDecimalToIntCeilsPositiveConsumption(t *testing.T) {
 	require.Equal(t, 65, quotaDecimalToInt(decimal.RequireFromString("65")))
 }
 
+func TestQuotaDecimalToIntRoundsNegativeCorrectionsTowardZero(t *testing.T) {
+	require.Equal(t, 0, quotaDecimalToInt(decimal.RequireFromString("-0.01")))
+	require.Equal(t, -64, quotaDecimalToInt(decimal.RequireFromString("-64.99")))
+	require.Equal(t, -65, quotaDecimalToInt(decimal.RequireFromString("-65")))
+}
+
 func TestCalculateTextQuotaSummaryUnifiedForClaudeSemantic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -251,6 +257,172 @@ func TestCalculateTextQuotaSummaryUsesAnthropicUsageSemanticFromUpstreamUsage(t 
 	require.Equal(t, 1488, summary.Quota)
 }
 
+func TestCalculateTextQuotaSummaryUsesClaudeBillingUsageBeforeTopLevelUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	relayInfo := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		OriginModelName: "claude-3-7-sonnet",
+		PriceData: types.PriceData{
+			ModelRatio:           1,
+			CompletionRatio:      2,
+			CacheRatio:           0.1,
+			CacheCreationRatio:   1.25,
+			CacheCreation5mRatio: 1.25,
+			CacheCreation1hRatio: 2,
+			GroupRatioInfo:       types.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+
+	usage := &dto.Usage{
+		PromptTokens:     999,
+		CompletionTokens: 999,
+		TotalTokens:      1998,
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+			InputTokens:              70,
+			CacheReadInputTokens:     30,
+			CacheCreationInputTokens: 20,
+			OutputTokens:             7,
+			CacheCreation: &dto.ClaudeCacheCreationUsage{
+				Ephemeral5mInputTokens: 12,
+				Ephemeral1hInputTokens: 8,
+			},
+		}),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, effectiveBillingUsage(usage))
+
+	require.True(t, summary.IsClaudeUsageSemantic)
+	require.Equal(t, dto.BillingUsageSemanticAnthropic, summary.UsageSemantic)
+	require.Equal(t, 70, summary.PromptTokens)
+	require.Equal(t, 7, summary.CompletionTokens)
+	require.Equal(t, 30, summary.CacheTokens)
+	require.Equal(t, 20, summary.CacheCreationTokens)
+	require.Equal(t, 12, summary.CacheCreationTokens5m)
+	require.Equal(t, 8, summary.CacheCreationTokens1h)
+	require.Equal(t, 118, summary.Quota)
+}
+
+func TestCalculateTextQuotaSummaryUsesGeminiBillingUsageBeforeTopLevelUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	relayInfo := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		OriginModelName: "gemini-2.5-flash",
+		PriceData: types.PriceData{
+			ModelRatio:      1,
+			CompletionRatio: 2,
+			CacheRatio:      0.1,
+			GroupRatioInfo:  types.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+
+	usage := &dto.Usage{
+		PromptTokens:     999,
+		CompletionTokens: 999,
+		TotalTokens:      1998,
+		BillingUsage: dto.NewGeminiChatBillingUsage(&dto.GeminiUsageMetadata{
+			PromptTokenCount:        100,
+			ToolUsePromptTokenCount: 5,
+			CandidatesTokenCount:    20,
+			ThoughtsTokenCount:      3,
+			TotalTokenCount:         128,
+			CachedContentTokenCount: 7,
+		}),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, effectiveBillingUsage(usage))
+
+	require.False(t, summary.IsClaudeUsageSemantic)
+	require.Equal(t, dto.BillingUsageSemanticGemini, summary.UsageSemantic)
+	require.Equal(t, 105, summary.PromptTokens)
+	require.Equal(t, 23, summary.CompletionTokens)
+	require.Equal(t, 7, summary.CacheTokens)
+	require.Equal(t, 128, summary.TotalTokens)
+	require.Equal(t, 145, summary.Quota)
+}
+
+func TestCalculateTextQuotaSummaryUsesOpenAIBillingUsageBeforeTopLevelUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	relayInfo := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatClaude,
+		OriginModelName: "gpt-4o",
+		PriceData: types.PriceData{
+			ModelRatio:      1,
+			CompletionRatio: 2,
+			GroupRatioInfo:  types.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+
+	usage := &dto.Usage{
+		PromptTokens:     999,
+		CompletionTokens: 999,
+		TotalTokens:      1998,
+		BillingUsage: dto.NewOpenAIChatBillingUsage(&dto.Usage{
+			PromptTokens:     80,
+			CompletionTokens: 9,
+			TotalTokens:      89,
+		}),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, effectiveBillingUsage(usage))
+
+	require.False(t, summary.IsClaudeUsageSemantic)
+	require.Equal(t, dto.BillingUsageSemanticOpenAI, summary.UsageSemantic)
+	require.Equal(t, 80, summary.PromptTokens)
+	require.Equal(t, 9, summary.CompletionTokens)
+	require.Equal(t, 89, summary.TotalTokens)
+	require.Equal(t, 98, summary.Quota)
+}
+
+func TestUsageBillingPathForLog(t *testing.T) {
+	require.Equal(t, usageBillingPathLocal, usageBillingPathForLog(true, &dto.Usage{
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{InputTokens: 1}),
+	}))
+	require.Equal(t, usageBillingPathUpstream, usageBillingPathForLog(false, &dto.Usage{}))
+	require.Equal(t, usageBillingPathOpenAI, usageBillingPathForLog(false, &dto.Usage{
+		BillingUsage: dto.NewOpenAIChatBillingUsage(&dto.Usage{PromptTokens: 1}),
+	}))
+	require.Equal(t, usageBillingPathAnthropic, usageBillingPathForLog(false, &dto.Usage{
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{InputTokens: 1}),
+	}))
+	require.Equal(t, usageBillingPathGemini, usageBillingPathForLog(false, &dto.Usage{
+		BillingUsage: dto.NewGeminiChatBillingUsage(&dto.GeminiUsageMetadata{PromptTokenCount: 1}),
+	}))
+	require.Equal(t, usageBillingPathGeminiEstimated, usageBillingPathForLog(false, &dto.Usage{
+		BillingUsage: dto.NewEstimatedGeminiChatBillingUsage(&dto.Usage{PromptTokens: 1}),
+	}))
+}
+
+func TestAppendUsageBillingPathForLogWritesAdminInfo(t *testing.T) {
+	other := map[string]interface{}{
+		"admin_info": map[string]interface{}{},
+	}
+	appendUsageBillingPathForLog(other, false, &dto.Usage{
+		BillingUsage: dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{InputTokens: 1}),
+	})
+
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, usageBillingPathAnthropic, adminInfo["usage_billing_path"])
+
+	other = map[string]interface{}{}
+	appendUsageBillingPathForLog(other, true, nil)
+	adminInfo, ok = other["admin_info"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, usageBillingPathLocal, adminInfo["usage_billing_path"])
+}
+
 func TestCacheWriteTokensTotal(t *testing.T) {
 	t.Run("split cache creation", func(t *testing.T) {
 		summary := textQuotaSummary{
@@ -273,6 +445,92 @@ func TestCacheWriteTokensTotal(t *testing.T) {
 		}
 		require.Equal(t, 30, cacheWriteTokensTotal(summary))
 	})
+
+	t.Run("overflowing split cache creation saturates", func(t *testing.T) {
+		maxInt := int(^uint(0) >> 1)
+		summary := textQuotaSummary{
+			CacheCreationTokens5m: maxInt,
+			CacheCreationTokens1h: maxInt,
+		}
+		require.Equal(t, maxInt, cacheWriteTokensTotal(summary))
+	})
+}
+
+func TestChargeableTextTokenCountSaturatesAndIgnoresNegativeValues(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	summary := textQuotaSummary{
+		PromptTokens:          maxInt,
+		CompletionTokens:      maxInt,
+		CacheTokens:           -1,
+		CacheCreationTokens:   -1,
+		CacheCreationTokens5m: maxInt,
+		CacheCreationTokens1h: maxInt,
+		ImageTokens:           -1,
+		AudioTokens:           maxInt,
+	}
+
+	require.Equal(t, maxInt, chargeableTextTokenCount(summary))
+}
+
+func TestUsageFromClaudeBillingUsageUsesMaximumCacheBuckets(t *testing.T) {
+	billingUsage := &dto.BillingUsage{
+		Source:   dto.BillingUsageSourceClaudeMessages,
+		Semantic: dto.BillingUsageSemanticAnthropic,
+		ClaudeUsage: &dto.ClaudeUsage{
+			InputTokens: 1,
+			CacheCreation: &dto.ClaudeCacheCreationUsage{
+				Ephemeral5mInputTokens: 10,
+				Ephemeral1hInputTokens: 40,
+			},
+			ClaudeCacheCreation5mTokens: 30,
+			ClaudeCacheCreation1hTokens: 20,
+		},
+	}
+
+	usage := usageFromClaudeBillingUsage(billingUsage)
+	require.Equal(t, 30, usage.ClaudeCacheCreation5mTokens)
+	require.Equal(t, 40, usage.ClaudeCacheCreation1hTokens)
+}
+
+func TestCalculateTextQuotaSummaryIgnoresNegativeUpstreamTokenCounts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "negative-usage-model",
+		PriceData: types.PriceData{
+			ModelRatio:         1,
+			CompletionRatio:    2,
+			CacheRatio:         0.1,
+			CacheCreationRatio: 1.25,
+			ImageRatio:         1,
+			GroupRatioInfo:     types.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+	usage := &dto.Usage{
+		PromptTokens:     1000,
+		CompletionTokens: -100,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens:     -200,
+			CacheWriteTokens: -300,
+			ImageTokens:      -400,
+			AudioTokens:      -500,
+		},
+		ClaudeCacheCreation5mTokens: -600,
+		ClaudeCacheCreation1hTokens: -700,
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+	require.Equal(t, 1000, summary.PromptTokens)
+	require.Zero(t, summary.CompletionTokens)
+	require.Zero(t, summary.CacheTokens)
+	require.Zero(t, summary.CacheCreationTokens)
+	require.Zero(t, summary.CacheCreationTokens5m)
+	require.Zero(t, summary.CacheCreationTokens1h)
+	require.Equal(t, 1000, summary.TotalTokens)
+	require.Equal(t, 1000, summary.ChargeableTokens)
+	require.Equal(t, 1000, summary.Quota)
 }
 
 func TestCalculateTextQuotaSummaryHandlesLegacyClaudeDerivedOpenAIUsage(t *testing.T) {
@@ -308,6 +566,64 @@ func TestCalculateTextQuotaSummaryHandlesLegacyClaudeDerivedOpenAIUsage(t *testi
 
 	// 62 + 3544*0.1 + 586*1.25 + 95*5 = 1624.9 => 1624
 	require.Equal(t, 1624, summary.Quota)
+}
+
+func TestCalculateTextQuotaSummaryBillsOpenAICacheWriteTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	relayInfo := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		OriginModelName: "gpt-5.1",
+		PriceData: types.PriceData{
+			ModelRatio:         1,
+			CompletionRatio:    2,
+			CacheRatio:         0.1,
+			CacheCreationRatio: 1.25,
+			GroupRatioInfo:     types.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+
+	t.Run("uncached remainder stays positive", func(t *testing.T) {
+		usage := &dto.Usage{
+			PromptTokens:     1473,
+			CompletionTokens: 19,
+			PromptTokensDetails: dto.InputTokenDetails{
+				CacheWriteTokens: 1470,
+			},
+		}
+
+		summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+		require.Equal(t, 1470, summary.CacheCreationTokens)
+		// (1473-0-1470) + 1470*1.25 + 19*2 = 3 + 1837.5 + 38 = 1878.5 => 1879
+		require.Equal(t, 1879, summary.Quota)
+	})
+
+	t.Run("uncached remainder clamps to zero", func(t *testing.T) {
+		// Real OpenAI payload shape: cached_tokens + cache_write_tokens exceeds
+		// prompt_tokens because both are unadjusted prefix counts. The negative
+		// remainder must clamp to zero, never turn into a negative base charge.
+		usage := &dto.Usage{
+			PromptTokens:     3619,
+			CompletionTokens: 36,
+			PromptTokensDetails: dto.InputTokenDetails{
+				CachedTokens:     2921,
+				CacheWriteTokens: 3616,
+			},
+		}
+
+		summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+		require.Equal(t, 3619, summary.PromptTokens)
+		require.Equal(t, 3616, summary.CacheCreationTokens)
+		// max(3619-2921-3616, 0) + 2921*0.1 + 3616*1.25 + 36*2 = 4884.1.
+		// The custom billing policy rounds positive settlement quota up once, so
+		// fractional charges cannot be truncated into an undercharge.
+		require.Equal(t, 4885, summary.Quota)
+	})
 }
 
 func TestCalculateTextQuotaSummarySeparatesOpenRouterCacheReadFromPromptBilling(t *testing.T) {
@@ -952,4 +1268,32 @@ func TestClampEstimatedUsageSkipsTrustedUsage(t *testing.T) {
 
 	require.Equal(t, 1000, usage.PromptTokens)
 	require.Equal(t, 50000, usage.PromptTokensDetails.CachedCreationTokens, "真实 usage 不被 clamp 触碰")
+}
+
+func TestCalculateTextQuotaSummaryFixedPriceAppliesImageCountOnceAndAllowsOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	priceData := types.PriceData{
+		ModelPrice: 0.12,
+		UsePrice:   true,
+		GroupRatioInfo: types.GroupRatioInfo{
+			GroupRatio: 1,
+		},
+	}
+	priceData.AddOtherRatio("n", 3)
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "dall-e-3",
+		PriceData:       priceData,
+		StartTime:       time.Now(),
+	}
+	usage := &dto.Usage{PromptTokens: 1, TotalTokens: 1}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	require.Equal(t, 180000, summary.Quota)
+
+	// An adaptor-reported actual count replaces the requested count rather
+	// than multiplying it a second time.
+	relayInfo.PriceData.AddOtherRatio("n", 2)
+	summary = calculateTextQuotaSummary(ctx, relayInfo, usage)
+	require.Equal(t, 120000, summary.Quota)
 }

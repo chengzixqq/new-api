@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { type Row, type PaginationState } from '@tanstack/react-table'
+import type { Row, PaginationState } from '@tanstack/react-table'
 import { useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -52,8 +52,8 @@ export function PricingTable(props: PricingTableProps) {
     usdExchangeRate = 1,
     tokenUnit = DEFAULT_TOKEN_UNIT,
     showRechargePrice = false,
-    onModelClick,
     selectedGroup,
+    onModelClick,
   } = props
 
   const [pagination, setPagination] = useState<PaginationState>({

@@ -73,7 +73,7 @@ func priceOverrideToQuota(price *float64, tokens decimal.Decimal) (decimal.Decim
 // saturation guard so an oversized product clamps instead of wrapping into a
 // credit. Positive charges are rounded UP (ceil) so a fractional charge is never
 // truncated into an undercharge; negative values (refunds/corrections) are
-// rounded toward zero via floor so we never over-credit the user. The returned
+// rounded toward zero via ceil so we never over-credit the user. The returned
 // *common.QuotaClamp is non-nil only when saturation kicked in, so callers can
 // record the event for admin auditing via noteQuotaClamp.
 func quotaDecimalToIntChecked(quota decimal.Decimal) (int, *common.QuotaClamp) {
@@ -84,7 +84,7 @@ func quotaDecimalToIntChecked(quota decimal.Decimal) (int, *common.QuotaClamp) {
 	if quota.IsPositive() {
 		rounded = quota.Ceil()
 	} else {
-		rounded = quota.Floor()
+		rounded = quota.Ceil()
 	}
 	// rounded is already integer-valued; QuotaFromDecimalChecked's internal
 	// Round(0) is a no-op here and only the int32 saturation applies.
@@ -152,13 +152,10 @@ func applyTextGroupPriceOverride(relayInfo *relaycommon.RelayInfo, summary *text
 
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
 	if summary.CacheCreationTokens5m > 0 || summary.CacheCreationTokens1h > 0 {
-		splitCacheWriteTokens := summary.CacheCreationTokens5m + summary.CacheCreationTokens1h
-		if summary.CacheCreationTokens > splitCacheWriteTokens {
-			return summary.CacheCreationTokens
-		}
-		return splitCacheWriteTokens
+		splitCacheWriteTokens := saturatingPositiveTokenSum(summary.CacheCreationTokens5m, summary.CacheCreationTokens1h)
+		return maxPositiveTokenCount(summary.CacheCreationTokens, splitCacheWriteTokens)
 	}
-	return summary.CacheCreationTokens
+	return positiveTokenCount(summary.CacheCreationTokens)
 }
 
 func isLegacyClaudeDerivedOpenAIUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) bool {
@@ -275,21 +272,46 @@ func positiveTokenCount(value int) int {
 	return 0
 }
 
-func chargeableTextTokenCount(summary textQuotaSummary) int {
-	cacheCreationTokens := summary.CacheCreationTokens
-	splitCacheCreationTokens := summary.CacheCreationTokens5m + summary.CacheCreationTokens1h
-	if splitCacheCreationTokens > cacheCreationTokens {
-		cacheCreationTokens = splitCacheCreationTokens
+func maxPositiveTokenCount(values ...int) int {
+	maxValue := 0
+	for _, value := range values {
+		if value > maxValue {
+			maxValue = value
+		}
 	}
-
-	return positiveTokenCount(summary.PromptTokens) +
-		positiveTokenCount(summary.CompletionTokens) +
-		positiveTokenCount(summary.CacheTokens) +
-		positiveTokenCount(cacheCreationTokens) +
-		positiveTokenCount(summary.ImageTokens) +
-		positiveTokenCount(summary.AudioTokens)
+	return maxValue
 }
 
+func saturatingPositiveTokenSum(values ...int) int {
+	maxInt := int(^uint(0) >> 1)
+	total := 0
+	for _, value := range values {
+		value = positiveTokenCount(value)
+		if total > maxInt-value {
+			return maxInt
+		}
+		total += value
+	}
+	return total
+}
+
+func chargeableTextTokenCount(summary textQuotaSummary) int {
+	splitCacheCreationTokens := saturatingPositiveTokenSum(summary.CacheCreationTokens5m, summary.CacheCreationTokens1h)
+	cacheCreationTokens := maxPositiveTokenCount(summary.CacheCreationTokens, splitCacheCreationTokens)
+
+	return saturatingPositiveTokenSum(
+		summary.PromptTokens,
+		summary.CompletionTokens,
+		summary.CacheTokens,
+		cacheCreationTokens,
+		summary.ImageTokens,
+		summary.AudioTokens,
+	)
+}
+
+// calculateTextQuotaSummary expects a usage already remapped by
+// effectiveBillingUsage; PostTextConsumeQuota performs that remap once and shares
+// the result with tiered billing, affinity observation and logging.
 func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) textQuotaSummary {
 	summary := textQuotaSummary{
 		ModelName:            relayInfo.OriginModelName,
@@ -316,15 +338,15 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		}
 	}
 
-	summary.PromptTokens = usage.PromptTokens
-	summary.CompletionTokens = usage.CompletionTokens
-	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
-	summary.CacheCreationTokens = usage.PromptTokensDetails.CachedCreationTokens
-	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens
-	summary.CacheCreationTokens1h = usage.ClaudeCacheCreation1hTokens
-	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
-	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
+	summary.PromptTokens = positiveTokenCount(usage.PromptTokens)
+	summary.CompletionTokens = positiveTokenCount(usage.CompletionTokens)
+	summary.TotalTokens = saturatingPositiveTokenSum(summary.PromptTokens, summary.CompletionTokens)
+	summary.CacheTokens = positiveTokenCount(usage.PromptTokensDetails.CachedTokens)
+	summary.CacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
+	summary.CacheCreationTokens5m = positiveTokenCount(usage.ClaudeCacheCreation5mTokens)
+	summary.CacheCreationTokens1h = positiveTokenCount(usage.ClaudeCacheCreation1hTokens)
+	summary.ImageTokens = positiveTokenCount(usage.PromptTokensDetails.ImageTokens)
+	summary.AudioTokens = positiveTokenCount(usage.PromptTokensDetails.AudioTokens)
 	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&
@@ -340,6 +362,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			}
 		}
 		summary.PromptTokens -= summary.CacheCreationTokens
+		summary.PromptTokens = positiveTokenCount(summary.PromptTokens)
 	}
 	// ChargeableTokens is the zero-guard/min-fee sentinel. It deliberately
 	// includes billable cache/image/audio input tokens while keeping TotalTokens
@@ -428,6 +451,12 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			}
 		}
 
+		// Cached/read/write prefix counters may overlap. Never let that overlap
+		// turn the uncached remainder into a negative credit.
+		if baseTokens.IsNegative() {
+			baseTokens = decimal.Zero
+		}
+
 		quotaCalculateDecimal := decimal.Zero
 		if overrideQuota, ok := applyTextGroupPriceOverride(relayInfo, &summary, map[string]decimal.Decimal{
 			"prompt":          baseTokens,
@@ -446,12 +475,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		}
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(summary.ToolCallSurchargeQuota)
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(audioInputQuota)
-
-		if len(relayInfo.PriceData.OtherRatios) > 0 {
-			for _, otherRatio := range relayInfo.PriceData.OtherRatios {
-				quotaCalculateDecimal = quotaCalculateDecimal.Mul(decimal.NewFromFloat(otherRatio))
-			}
-		}
+		quotaCalculateDecimal = relayInfo.PriceData.ApplyOtherRatiosToDecimal(quotaCalculateDecimal)
 
 		if (!ratio.IsZero() || (relayInfo.PriceData.GroupPriceOverride != nil && relayInfo.PriceData.GroupPriceOverride.HasPriceOverride())) && quotaCalculateDecimal.LessThanOrEqual(decimal.Zero) {
 			quotaCalculateDecimal = decimal.NewFromInt(1)
@@ -472,11 +496,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		}
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(summary.ToolCallSurchargeQuota)
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(audioInputQuota)
-		if len(relayInfo.PriceData.OtherRatios) > 0 {
-			for _, otherRatio := range relayInfo.PriceData.OtherRatios {
-				quotaCalculateDecimal = quotaCalculateDecimal.Mul(decimal.NewFromFloat(otherRatio))
-			}
-		}
+		quotaCalculateDecimal = relayInfo.PriceData.ApplyOtherRatiosToDecimal(quotaCalculateDecimal)
 		quota, clamp := quotaDecimalToIntChecked(quotaCalculateDecimal)
 		summary.Quota = quota
 		noteQuotaClamp(relayInfo, clamp)
@@ -515,15 +535,16 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
 	originUsage := usage
+	billingUsage := effectiveBillingUsage(usage)
 	if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")
 	}
 	if originUsage != nil {
-		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, usage, relayInfo.GetFinalRequestRelayFormat())
+		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, billingUsage, relayInfo.GetFinalRequestRelayFormat())
 	}
 
 	adminRejectReason := common.GetContextKeyString(ctx, constant.ContextKeyAdminRejectReason)
-	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	summary := calculateTextQuotaSummary(ctx, relayInfo, billingUsage)
 
 	var tieredResult *billingexpr.TieredResult
 	tieredBillingApplied := false
@@ -532,7 +553,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		if snap := relayInfo.TieredBillingSnapshot; snap != nil {
 			tieredUsedVars = billingexpr.UsedVars(snap.ExprString)
 		}
-		tieredOk, tieredQuota, tieredRes := TryTieredSettle(relayInfo, BuildTieredTokenParams(usage, summary.IsClaudeUsageSemantic, tieredUsedVars))
+		tieredOk, tieredQuota, tieredRes := TryTieredSettle(relayInfo, BuildTieredTokenParams(billingUsage, summary.IsClaudeUsageSemantic, tieredUsedVars))
 		if tieredOk {
 			tieredBillingApplied = true
 			tieredResult = tieredRes
@@ -594,6 +615,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	} else {
 		other = GenerateTextOtherInfo(ctx, relayInfo, summary.ModelRatio, summary.GroupRatio, summary.CompletionRatio, summary.CacheTokens, summary.CacheRatio, summary.ModelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	}
+	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), originUsage)
 	if adminRejectReason != "" {
 		other["reject_reason"] = adminRejectReason
 	}
@@ -644,12 +666,12 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		// to cache_creation_tokens.
 		other["cache_write_tokens"] = cacheWriteTokens
 	}
-	if relayInfo.GetFinalRequestRelayFormat() != types.RelayFormatClaude && usage != nil && usage.UsageSource != "" && usage.InputTokens > 0 {
+	if relayInfo.GetFinalRequestRelayFormat() != types.RelayFormatClaude && billingUsage != nil && billingUsage.UsageSource != "" && billingUsage.InputTokens > 0 {
 		// input_tokens_total: explicit normalized total input used by the usage log UI.
 		// Only write this field when upstream/current conversion has already provided a
 		// reliable total input value and tagged the usage source. Do not infer it from
 		// prompt/cache fields here, otherwise old upstream payloads may be double-counted.
-		other["input_tokens_total"] = usage.InputTokens
+		other["input_tokens_total"] = billingUsage.InputTokens
 	}
 	if tieredBillingApplied {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)

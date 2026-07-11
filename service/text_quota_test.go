@@ -748,9 +748,9 @@ func TestApplyLocalCountCacheControlFallbackSkipsRealUsage(t *testing.T) {
 
 // TestCalculateTextQuotaSummaryCacheWriteOnlyNotZeroed 复刻部署后发现的漏扣回归:
 // cache_control 兜底把输入全部转记为缓存写入(PromptTokens=0),且响应为空(CompletionTokens=0)
-// 时,summary.TotalTokens 若只算 prompt+completion 会等于 0,触发「TotalTokens==0 ⇒ 免费」
-// 保护把已算好的缓存写入 quota 清零 —— 生产实测 38 万缓存写入 token 收费 0。修复:TotalTokens
-// 必须计入缓存 token。此测试确保纯缓存写入请求 quota 严格 > 0。
+// 时,若空请求保护只看 prompt+completion,会把已算好的缓存写入 quota 清零 —— 生产实测
+// 38 万缓存写入 token 收费 0。修复:用 ChargeableTokens 判空,TotalTokens 仍保持真实
+// prompt+completion 语义。此测试确保纯缓存写入请求按公式精确扣费。
 func TestCalculateTextQuotaSummaryCacheWriteOnlyNotZeroed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -783,8 +783,44 @@ func TestCalculateTextQuotaSummaryCacheWriteOnlyNotZeroed(t *testing.T) {
 
 	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
 
-	require.Greater(t, summary.TotalTokens, 0, "缓存写入 token 必须计入 TotalTokens,否则被判空请求")
-	require.Greater(t, summary.Quota, 0, "纯缓存写入请求不能被 TotalTokens==0 保护清零(漏扣回归点)")
+	require.Equal(t, 0, summary.TotalTokens, "TotalTokens 保持 prompt+completion 真实语义")
+	require.Equal(t, 382182, summary.ChargeableTokens, "缓存写入 token 必须计入判空用的 ChargeableTokens")
+	require.Equal(t, 95546, summary.Quota, "382182 * 1.25 * 2.5 * 0.08 应向上取整扣费")
+}
+
+func TestCalculateTextQuotaSummaryChargeableTokensAvoidsClaudeCacheCreationDoubleCount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	usage := &dto.Usage{
+		PromptTokens:     0,
+		CompletionTokens: 0,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedCreationTokens: 100,
+		},
+		ClaudeCacheCreation5mTokens: 100,
+	}
+	relayInfo := &relaycommon.RelayInfo{
+		RelayFormat:             types.RelayFormatClaude,
+		FinalRequestRelayFormat: types.RelayFormatClaude,
+		OriginModelName:         "claude-opus-4-8",
+		PriceData: types.PriceData{
+			ModelRatio:           1,
+			CompletionRatio:      1,
+			CacheRatio:           0.1,
+			CacheCreationRatio:   1.25,
+			CacheCreation5mRatio: 1.25,
+			CacheCreation1hRatio: 2,
+			GroupRatioInfo:       types.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+	require.Equal(t, 0, summary.TotalTokens)
+	require.Equal(t, 100, summary.ChargeableTokens, "aggregate 与 5m/1h split 描述同一批 cache creation,判空计数不能双算")
 }
 
 // TestClampEstimatedUsageToObservedInput 验证第二道防线:即便某段估算逻辑仍然伪造出

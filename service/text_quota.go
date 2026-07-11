@@ -25,6 +25,7 @@ type textQuotaSummary struct {
 	PromptTokens             int
 	CompletionTokens         int
 	TotalTokens              int
+	ChargeableTokens         int
 	CacheTokens              int
 	CacheCreationTokens      int
 	CacheCreationTokens5m    int
@@ -267,6 +268,28 @@ func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaS
 	return total
 }
 
+func positiveTokenCount(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 0
+}
+
+func chargeableTextTokenCount(summary textQuotaSummary) int {
+	cacheCreationTokens := summary.CacheCreationTokens
+	splitCacheCreationTokens := summary.CacheCreationTokens5m + summary.CacheCreationTokens1h
+	if splitCacheCreationTokens > cacheCreationTokens {
+		cacheCreationTokens = splitCacheCreationTokens
+	}
+
+	return positiveTokenCount(summary.PromptTokens) +
+		positiveTokenCount(summary.CompletionTokens) +
+		positiveTokenCount(summary.CacheTokens) +
+		positiveTokenCount(cacheCreationTokens) +
+		positiveTokenCount(summary.ImageTokens) +
+		positiveTokenCount(summary.AudioTokens)
+}
+
 func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) textQuotaSummary {
 	summary := textQuotaSummary{
 		ModelName:            relayInfo.OriginModelName,
@@ -295,15 +318,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 
 	summary.PromptTokens = usage.PromptTokens
 	summary.CompletionTokens = usage.CompletionTokens
-	// TotalTokens 用作「本次请求是否有可计费 token」的判据(下方多处 TotalTokens==0 ⇒ 免费/
-	// 无法扣费的保护)。缓存读/缓存写入 token 同样是可计费输入,必须计入,否则纯缓存写入
-	// 的请求(如 cache_control 兜底把输入全部转记为缓存写入、PromptTokens 置 0、completion 为空)
-	// 会被误判为空请求而 quota 归零 —— 造成漏扣。
-	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens +
-		usage.PromptTokensDetails.CachedTokens +
-		usage.PromptTokensDetails.CachedCreationTokens +
-		usage.ClaudeCacheCreation5mTokens +
-		usage.ClaudeCacheCreation1hTokens
+	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
 	summary.CacheCreationTokens = usage.PromptTokensDetails.CachedCreationTokens
 	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens
@@ -326,6 +341,12 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		}
 		summary.PromptTokens -= summary.CacheCreationTokens
 	}
+	// ChargeableTokens is the zero-guard/min-fee sentinel. It deliberately
+	// includes billable cache/image/audio input tokens while keeping TotalTokens
+	// as the plain prompt+completion total. For Claude cache creation, aggregate
+	// and 5m/1h split fields describe the same input side, so use the larger of
+	// aggregate vs split sum rather than adding both.
+	summary.ChargeableTokens = chargeableTextTokenCount(summary)
 
 	dPromptTokens := decimal.NewFromInt(int64(summary.PromptTokens))
 	dCacheTokens := decimal.NewFromInt(int64(summary.CacheTokens))
@@ -461,7 +482,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		noteQuotaClamp(relayInfo, clamp)
 	}
 
-	if summary.TotalTokens == 0 {
+	if summary.ChargeableTokens == 0 {
 		summary.Quota = 0
 	} else if (!ratio.IsZero() || (relayInfo.PriceData.GroupPriceOverride != nil && relayInfo.PriceData.GroupPriceOverride.HasPriceOverride())) && summary.Quota == 0 {
 		summary.Quota = 1
@@ -470,10 +491,10 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	return summary
 }
 
-// applyMinFeeQuota 对按量计费请求兜底最低费用：仅 !UsePrice、非阶梯、有实际计费(totalTokens>0)
+// applyMinFeeQuota 对按量计费请求兜底最低费用：仅 !UsePrice、非阶梯、有实际计费(chargeableTokens>0)
 // 且算出的 quota 低于 MinQuota 时，抬升到 MinQuota。返回兜底后的 quota 及是否触发。
-func applyMinFeeQuota(quota int, priceData types.PriceData, totalTokens int, tieredApplied bool) (int, bool) {
-	if totalTokens <= 0 || priceData.UsePrice || tieredApplied {
+func applyMinFeeQuota(quota int, priceData types.PriceData, chargeableTokens int, tieredApplied bool) (int, bool) {
+	if chargeableTokens <= 0 || priceData.UsePrice || tieredApplied {
 		return quota, false
 	}
 	if priceData.MinQuota > 0 && quota < priceData.MinQuota {
@@ -519,7 +540,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		}
 	}
 
-	summary.Quota, _ = applyMinFeeQuota(summary.Quota, relayInfo.PriceData, summary.TotalTokens, tieredBillingApplied)
+	summary.Quota, _ = applyMinFeeQuota(summary.Quota, relayInfo.PriceData, summary.ChargeableTokens, tieredBillingApplied)
 
 	if summary.WebSearchCallCount > 0 {
 		extraContent = append(extraContent, fmt.Sprintf("Web Search 调用 %d 次，调用花费 %s", summary.WebSearchCallCount, decimal.NewFromFloat(summary.WebSearchPrice).Mul(decimal.NewFromInt(int64(summary.WebSearchCallCount))).Div(decimal.NewFromInt(1000)).Mul(decimal.NewFromFloat(summary.GroupRatio)).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).String()))
@@ -537,9 +558,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		extraContent = append(extraContent, fmt.Sprintf("Image Generation Call 花费 %s", decimal.NewFromFloat(summary.ImageGenerationCallPrice).Mul(decimal.NewFromFloat(summary.GroupRatio)).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).String()))
 	}
 
-	if summary.TotalTokens == 0 {
+	if summary.ChargeableTokens == 0 {
 		extraContent = append(extraContent, "上游没有返回计费信息，无法扣费（可能是上游超时）")
-		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
+		logger.LogError(ctx, fmt.Sprintf("chargeable tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
 	} else {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)

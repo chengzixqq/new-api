@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -36,11 +37,27 @@ func redisUserRateLimitKey(mark string, userId int) string {
 	return fmt.Sprintf("%s%s:user:%d", redisRateLimitKeyPrefix, mark, userId)
 }
 
-func applyRedisRateLimit(c *gin.Context, key string, maxRequestNum int, duration int64) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), redisRateLimitTimeout)
-	defer cancel()
+func takeRedisSlidingWindow(ctx context.Context, key string, maxRequestNum int, duration int64) (bool, int, error) {
+	if maxRequestNum <= 0 {
+		return true, 0, nil
+	}
+	if common.RDB == nil {
+		return false, 0, fmt.Errorf("Redis client is not initialized")
+	}
+	if key == "" {
+		return false, 0, fmt.Errorf("rate limit key is empty")
+	}
+	if duration <= 0 {
+		return false, 0, fmt.Errorf("rate limit duration must be positive")
+	}
 
-	allowed, retryAfter, err := limiter.SlidingWindowAllow(ctx, common.RDB, key, maxRequestNum, duration)
+	ctx, cancel := context.WithTimeout(ctx, redisRateLimitTimeout)
+	defer cancel()
+	return limiter.SlidingWindowAllow(ctx, common.RDB, key, maxRequestNum, duration)
+}
+
+func applyRedisRateLimit(c *gin.Context, key string, maxRequestNum int, duration int64) {
+	allowed, retryAfter, err := takeRedisSlidingWindow(c.Request.Context(), key, maxRequestNum, duration)
 	if err != nil {
 		common.SysError(fmt.Sprintf("Redis rate limit failed: %v", err))
 		c.Status(http.StatusInternalServerError)
@@ -59,10 +76,21 @@ func applyRedisRateLimit(c *gin.Context, key string, maxRequestNum int, duration
 func memoryRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark string) {
 	key := mark + c.ClientIP()
 	if !inMemoryRateLimiter.Request(key, maxRequestNum, duration) {
-		c.Status(http.StatusTooManyRequests)
-		c.Abort()
+		writeRateLimited(c, duration)
 		return
 	}
+}
+
+// writeRateLimited rejects the request with 429 and a Retry-After hint so
+// clients can back off instead of treating the rejection as a fatal error.
+// The in-memory limiter cannot report the remaining window, so callers
+// without a TTL pass the full window duration as a conservative upper bound.
+func writeRateLimited(c *gin.Context, retryAfterSeconds int64) {
+	if retryAfterSeconds > 0 {
+		c.Header("Retry-After", strconv.FormatInt(retryAfterSeconds, 10))
+	}
+	c.Status(http.StatusTooManyRequests)
+	c.Abort()
 }
 
 func rateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gin.Context) {
@@ -70,12 +98,11 @@ func rateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gi
 		return func(c *gin.Context) {
 			redisRateLimiter(c, maxRequestNum, duration, mark)
 		}
-	} else {
-		// It's safe to call multi times.
-		inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
-		return func(c *gin.Context) {
-			memoryRateLimiter(c, maxRequestNum, duration, mark)
-		}
+	}
+	// It's safe to call multi times.
+	inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
+	return func(c *gin.Context) {
+		memoryRateLimiter(c, maxRequestNum, duration, mark)
 	}
 }
 
@@ -114,29 +141,27 @@ func UploadRateLimit() func(c *gin.Context) {
 func userRateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gin.Context) {
 	if common.RedisEnabled {
 		return func(c *gin.Context) {
-			userId := c.GetInt("id")
-			if userId == 0 {
+			userID := c.GetInt("id")
+			if userID == 0 {
 				c.Status(http.StatusUnauthorized)
 				c.Abort()
 				return
 			}
-			key := redisUserRateLimitKey(mark, userId)
-			userRedisRateLimiter(c, maxRequestNum, duration, key)
+			userRedisRateLimiter(c, maxRequestNum, duration, redisUserRateLimitKey(mark, userID))
 		}
 	}
 	// It's safe to call multi times.
 	inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
 	return func(c *gin.Context) {
-		userId := c.GetInt("id")
-		if userId == 0 {
+		userID := c.GetInt("id")
+		if userID == 0 {
 			c.Status(http.StatusUnauthorized)
 			c.Abort()
 			return
 		}
-		key := fmt.Sprintf("%s:user:%d", mark, userId)
+		key := fmt.Sprintf("%s:user:%d", mark, userID)
 		if !inMemoryRateLimiter.Request(key, maxRequestNum, duration) {
-			c.Status(http.StatusTooManyRequests)
-			c.Abort()
+			writeRateLimited(c, duration)
 			return
 		}
 	}

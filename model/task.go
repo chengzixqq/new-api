@@ -431,7 +431,9 @@ func (t *Task) UpdateQuota() error {
 
 // UpdateWithStatus performs a conditional UPDATE guarded by fromStatus (CAS).
 // Returns (true, nil) if this caller won the update, (false, nil) if
-// another process already moved the task out of fromStatus.
+// another process already moved the task out of fromStatus. MySQL commonly
+// reports changed rows rather than matched rows, so a same-value no-op update
+// can also return false even when the status predicate still matched.
 //
 // Uses Model().Select("*").Updates() instead of Save() because GORM's Save
 // falls back to INSERT ON CONFLICT when the WHERE-guarded UPDATE matches

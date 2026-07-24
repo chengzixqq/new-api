@@ -163,6 +163,12 @@ func (s *BillingSession) NeedsRefund() bool {
 	return s.needsRefundLocked()
 }
 
+func (s *BillingSession) IsSettled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.settled
+}
+
 func (s *BillingSession) needsRefundLocked() bool {
 	if s.settled || s.refunded || s.fundingSettled {
 		// fundingSettled 时资金来源已提交结算，不能再退预扣费

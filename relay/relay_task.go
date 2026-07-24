@@ -90,6 +90,14 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 		return service.TaskErrorWrapperLocal(errors.New("the channel of the origin task is disabled"), "task_channel_disable", http.StatusBadRequest)
 	}
 	info.LockedChannel = ch
+	channelSetting := ch.GetSetting()
+	channelOtherSettings := ch.GetOtherSettings()
+	common.SetContextKey(c, constant.ContextKeyChannelSetting, channelSetting)
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channelOtherSettings)
+	if info.ChannelMeta != nil {
+		info.ChannelSetting = channelSetting
+		info.ChannelOtherSettings = channelOtherSettings
+	}
 
 	if originTask.ChannelId != info.ChannelId {
 		key, _, newAPIError := ch.GetNextEnabledKey()

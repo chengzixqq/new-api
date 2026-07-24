@@ -1,4 +1,4 @@
-# 渠道而外设置说明
+# 渠道额外设置说明
 
 该配置用于设置一些额外的渠道参数，可以通过 JSON 对象进行配置。常用设置项包括：
 
@@ -8,7 +8,9 @@
 
 2. proxy
     - 用于配置网络代理
-    - 类型为字符串，填写代理地址（例如 socks5 协议的代理地址）
+    - 类型为字符串，支持 `http`、`https`、`socks5` 和 `socks5h` 协议
+    - 保存时必须包含协议和主机；仅允许空路径或根路径 `/`，不允许 query 或 fragment
+    - SOCKS 代理未填写端口时，运行时使用默认端口 `1080`
 
 3. thinking_to_content
    - 用于标识是否将思考内容`reasoning_content`转换为`<think>`标签拼接到内容中返回
@@ -18,6 +20,16 @@
    - 用于标识是否对该渠道启用上游连接预热
    - 类型为布尔值，设置为 true 时会在全局 `UPSTREAM_WARMUP_ENABLED` 开启时，定时请求该渠道上游的非计费预热路径
    - 预热任务会完整排空响应体后才记录为“连接可复用”，401/403/404 等业务状态码不会直接视为连接失败
+
+5. max_retries
+   - 用于覆盖该渠道的中转重试次数，类型为整数，范围 `0-10`
+   - 省略时继承系统 `RetryTimes`；显式设置为 `0` 时，该渠道请求失败后不再切换渠道重试
+
+6. responses_empty_output_guard
+   - 用于覆盖 Responses API 空输出保护，类型为布尔值
+   - 省略时继承系统 `global.responses_empty_output_guard_enabled`；显式 `true` 或 `false` 分别强制开启或关闭
+   - 开启后，`/v1/responses` 中仅含 reasoning、没有可见文本/拒答/工具或媒体输出的 completed 响应会返回 `upstream_empty_response`，且不会触发 New API 重试
+   - 非流式请求返回 HTTP 424；流式请求以 `response.failed` 终止。已发生的上游消耗仍按 usage 或预扣额度保底结算
 
 --------------------------------------------------------------
 
@@ -30,7 +42,9 @@
     "force_format": true,
     "thinking_to_content": true,
     "upstream_warmup_enabled": true,
-    "proxy": "socks5://xxxxxxx"
+    "max_retries": 0,
+    "responses_empty_output_guard": true,
+    "proxy": "socks5://proxy.example:1080"
 }
 ```
 
@@ -51,3 +65,9 @@
 --------------------------------------------------------------
 
 通过调整上述 JSON 配置中的值，可以灵活控制渠道的额外行为，比如是否进行格式化以及使用特定的网络代理。
+
+## 升级兼容性
+
+旧版本会忽略代理地址中的 path、query 和 fragment。为避免升级后中断已有渠道流量，运行时会继续剥离这些遗留后缀，并对同一代理地址每个进程记录一次不含凭证和后缀的警告。该兼容逻辑不会改写数据库；再次保存渠道时必须按上述严格规则修正代理地址。
+
+代理连接使用 30 秒 TCP 拨号超时和 30 秒 KeepAlive；TLS 握手超时为 10 秒。这些超时同样适用于未配置渠道代理的中转请求。

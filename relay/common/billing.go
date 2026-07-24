@@ -16,6 +16,9 @@ type BillingSettler interface {
 	// NeedsRefund 返回会话是否存在需要退还的预扣状态（未结算且未退款）。
 	NeedsRefund() bool
 
+	// IsSettled 返回资金结算是否已经完成，即使结算调用同时报告了后续令牌调整错误。
+	IsSettled() bool
+
 	// GetPreConsumedQuota 返回实际预扣的额度值（信任用户可能为 0）。
 	GetPreConsumedQuota() int
 

@@ -9,11 +9,8 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/gin-contrib/sessions"
-	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func setupTurnstileTest(t *testing.T, verifyHandler http.HandlerFunc) (*gin.Engine, gin.HandlerFunc) {
@@ -34,53 +31,31 @@ func setupTurnstileTest(t *testing.T, verifyHandler http.HandlerFunc) (*gin.Engi
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	store := cookie.NewStore([]byte("turnstile-test-session-secret"))
-	router.Use(sessions.Sessions("session", store))
 	return router, turnstileCheckWithClient(verifyServer.Client(), verifyServer.URL)
 }
 
-func TestTurnstileCheckIgnoresAndDeletesLegacySessionGrant(t *testing.T) {
+func TestTurnstileCheckIgnoresLegacySessionGrant(t *testing.T) {
 	var verificationCount atomic.Int32
 	router, turnstileCheck := setupTurnstileTest(t, func(w http.ResponseWriter, _ *http.Request) {
 		verificationCount.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	router.GET("/seed", func(c *gin.Context) {
-		session := sessions.Default(c)
-		session.Set("turnstile", true)
-		require.NoError(t, session.Save())
-		c.Status(http.StatusNoContent)
-	})
 	handlerCalled := false
 	router.GET("/protected", turnstileCheck, func(c *gin.Context) {
 		handlerCalled = true
 		c.Status(http.StatusNoContent)
 	})
-	router.GET("/inspect", func(c *gin.Context) {
-		assert.Nil(t, sessions.Default(c).Get("turnstile"))
-		c.Status(http.StatusNoContent)
-	})
-
-	seedResponse := httptest.NewRecorder()
-	router.ServeHTTP(seedResponse, httptest.NewRequest(http.MethodGet, "/seed", nil))
-	require.NotEmpty(t, seedResponse.Result().Cookies())
 
 	request := httptest.NewRequest(http.MethodGet, "/protected", nil)
-	request.AddCookie(seedResponse.Result().Cookies()[0])
+	request.AddCookie(&http.Cookie{Name: "session", Value: "legacy-turnstile-grant"})
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 
 	assert.False(t, handlerCalled)
 	assert.Contains(t, response.Body.String(), "Turnstile token")
 	assert.EqualValues(t, 0, verificationCount.Load())
-	require.NotEmpty(t, response.Result().Cookies())
-
-	inspectRequest := httptest.NewRequest(http.MethodGet, "/inspect", nil)
-	inspectRequest.AddCookie(response.Result().Cookies()[0])
-	inspectResponse := httptest.NewRecorder()
-	router.ServeHTTP(inspectResponse, inspectRequest)
-	assert.Equal(t, http.StatusNoContent, inspectResponse.Code)
+	assert.Empty(t, response.Result().Cookies())
 }
 
 func TestTurnstileCheckDoesNotPersistSuccessfulVerification(t *testing.T) {
@@ -97,7 +72,6 @@ func TestTurnstileCheckDoesNotPersistSuccessfulVerification(t *testing.T) {
 	})
 
 	router.GET("/protected", turnstileCheck, func(c *gin.Context) {
-		assert.Nil(t, sessions.Default(c).Get("turnstile"))
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	})
 

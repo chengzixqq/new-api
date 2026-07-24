@@ -537,8 +537,47 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 }
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
+	_ = postTextConsumeQuota(ctx, relayInfo, usage, extraContent, 0, false)
+}
+
+func PostTextConsumeQuotaForUpstreamEmptyResponse(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) error {
+	minimumQuota := upstreamEmptyResponseMinimumQuota(relayInfo, usage)
+	if minimumQuota > 0 && relayInfo != nil && relayInfo.Billing != nil && relayInfo.Billing.GetPreConsumedQuota() < minimumQuota {
+		if err := relayInfo.Billing.Reserve(minimumQuota); err != nil {
+			logger.LogWarn(ctx, "failed to reserve empty-response quota floor: "+err.Error())
+		}
+	}
+	return postTextConsumeQuota(ctx, relayInfo, usage, nil, minimumQuota, true)
+}
+
+func upstreamEmptyResponseMinimumQuota(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) int {
+	if relayInfo == nil || (usage != nil && (usage.PromptTokens > 0 || usage.CompletionTokens > 0)) {
+		return 0
+	}
+	minimumQuota := relayInfo.FinalPreConsumedQuota
+	if relayInfo.PriceData.QuotaToPreConsume > minimumQuota {
+		minimumQuota = relayInfo.PriceData.QuotaToPreConsume
+	}
+	if minimumQuota < 0 {
+		return 0
+	}
+	return minimumQuota
+}
+
+func retainPreConsumedQuotaAfterSettlementFailure(relayInfo *relaycommon.RelayInfo) (int, bool, error) {
+	if relayInfo == nil || relayInfo.Billing == nil || !relayInfo.Billing.NeedsRefund() {
+		return 0, false, nil
+	}
+	lockedQuota := relayInfo.Billing.GetPreConsumedQuota()
+	if err := relayInfo.Billing.Settle(lockedQuota); err != nil {
+		return lockedQuota, false, err
+	}
+	return lockedQuota, true, nil
+}
+
+func postTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string, minimumQuota int, upstreamEmptyResponse bool) error {
 	if relayInfo != nil && relayInfo.SSELimitExceededBeforeOutput() {
-		return
+		return nil
 	}
 	usage = conservativeInterruptedStreamUsage(ctx, relayInfo, usage)
 	originUsage := usage
@@ -569,6 +608,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	}
 
 	summary.Quota, _ = applyMinFeeQuota(summary.Quota, relayInfo.PriceData, summary.ChargeableTokens, tieredBillingApplied)
+	if minimumQuota > summary.Quota {
+		summary.Quota = minimumQuota
+		extraContent = append(extraContent, "upstream empty response usage fallback applied")
+	}
 
 	if summary.WebSearchCallCount > 0 {
 		extraContent = append(extraContent, fmt.Sprintf("Web Search 调用 %d 次，调用花费 %s", summary.WebSearchCallCount, decimal.NewFromFloat(summary.WebSearchPrice).Mul(decimal.NewFromInt(int64(summary.WebSearchCallCount))).Div(decimal.NewFromInt(1000)).Mul(decimal.NewFromFloat(summary.GroupRatio)).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).String()))
@@ -586,16 +629,38 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		extraContent = append(extraContent, fmt.Sprintf("Image Generation Call 花费 %s", decimal.NewFromFloat(summary.ImageGenerationCallPrice).Mul(decimal.NewFromFloat(summary.GroupRatio)).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).String()))
 	}
 
-	if summary.ChargeableTokens == 0 {
+	if summary.ChargeableTokens == 0 && summary.Quota == 0 {
 		extraContent = append(extraContent, "上游没有返回计费信息，无法扣费（可能是上游超时）")
 		logger.LogError(ctx, fmt.Sprintf("chargeable tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
-	} else {
-		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
-		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
 
-	if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
-		logger.LogError(ctx, "error settling billing: "+err.Error())
+	settlementAttemptedQuota := summary.Quota
+	settlementFallbackQuota := -1
+	settlementFailed := false
+	settlementErr := SettleBilling(ctx, relayInfo, summary.Quota)
+	if settlementErr != nil {
+		logger.LogError(ctx, "error settling billing: "+settlementErr.Error())
+		if upstreamEmptyResponse {
+			lockedQuota, retained, lockErr := retainPreConsumedQuotaAfterSettlementFailure(relayInfo)
+			if lockErr != nil {
+				logger.LogError(ctx, "error locking pre-consumed quota after empty-response settlement failure: "+lockErr.Error())
+				summary.Quota = 0
+				settlementFailed = true
+				extraContent = append(extraContent, "empty response settlement failed; charge not confirmed")
+			} else if retained {
+				summary.Quota = lockedQuota
+				settlementFallbackQuota = lockedQuota
+				extraContent = append(extraContent, "empty response settlement failed; retained pre-consumed quota")
+			} else if relayInfo == nil || relayInfo.Billing == nil || !relayInfo.Billing.IsSettled() {
+				summary.Quota = 0
+				settlementFailed = true
+				extraContent = append(extraContent, "empty response settlement failed; charge not confirmed")
+			}
+		}
+	}
+	if !settlementFailed && (summary.ChargeableTokens != 0 || summary.Quota != 0) {
+		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
+		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
 
 	logModel := summary.ModelName
@@ -623,6 +688,24 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		other = GenerateTextOtherInfo(ctx, relayInfo, summary.ModelRatio, summary.GroupRatio, summary.CompletionRatio, summary.CacheTokens, summary.CacheRatio, summary.ModelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	}
 	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), originUsage)
+	if upstreamEmptyResponse {
+		adminInfo, ok := other["admin_info"].(map[string]interface{})
+		if !ok || adminInfo == nil {
+			adminInfo = make(map[string]interface{})
+			other["admin_info"] = adminInfo
+		}
+		adminInfo["upstream_empty_response"] = map[string]interface{}{
+			"usage_present": originUsage != nil && (originUsage.PromptTokens > 0 || originUsage.CompletionTokens > 0),
+			"quota_floor":   minimumQuota,
+		}
+		if settlementFallbackQuota >= 0 {
+			adminInfo["upstream_empty_response"].(map[string]interface{})["settlement_fallback_quota"] = settlementFallbackQuota
+		}
+		if settlementFailed {
+			adminInfo["upstream_empty_response"].(map[string]interface{})["settlement_failed"] = true
+			adminInfo["upstream_empty_response"].(map[string]interface{})["settlement_attempted_quota"] = settlementAttemptedQuota
+		}
+	}
 	if adminRejectReason != "" {
 		other["reject_reason"] = adminRejectReason
 	}
@@ -703,4 +786,5 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(summary.CompletionTokens))
 	})
+	return settlementErr
 }

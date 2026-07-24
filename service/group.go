@@ -54,6 +54,21 @@ func GetUserAutoGroup(userGroup string) []string {
 	return autoGroups
 }
 
+// GetGroupsEnabledModels 按 groups 顺序获取各分组启用的模型并去重
+func GetGroupsEnabledModels(groups []string) []string {
+	seen := make(map[string]struct{})
+	models := make([]string, 0)
+	for _, group := range groups {
+		for _, modelName := range model.GetGroupEnabledModels(group) {
+			if _, ok := seen[modelName]; !ok {
+				seen[modelName] = struct{}{}
+				models = append(models, modelName)
+			}
+		}
+	}
+	return models
+}
+
 // GetUserGroupRatio 获取用户使用某个分组的倍率。可选的个人覆盖优先于用户分组规则。
 // userGroup 用户分组
 // group 需要获取倍率的分组

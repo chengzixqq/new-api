@@ -3,6 +3,7 @@ package dto
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/types"
@@ -10,6 +11,8 @@ import (
 
 const (
 	ResponsesOutputTypeImageGenerationCall = "image_generation_call"
+	ResponsesOutputTypeMessage             = "message"
+	ResponsesOutputTypeReasoning           = "reasoning"
 )
 
 type SimpleResponse struct {
@@ -320,6 +323,29 @@ func (o *OpenAIResponsesResponse) GetOpenAIError() *types.OpenAIError {
 	return GetOpenAIError(o.Error)
 }
 
+func (o *OpenAIResponsesResponse) StatusString() string {
+	if o == nil {
+		return ""
+	}
+	return common.JsonRawMessageToString(o.Status)
+}
+
+func (o *OpenAIResponsesResponse) HasUsableOutput() bool {
+	if o == nil {
+		return false
+	}
+	for _, output := range o.Output {
+		if output.HasUsableOutput() {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *OpenAIResponsesResponse) IsCompletedWithoutUsableOutput() bool {
+	return o != nil && o.StatusString() == "completed" && !o.HasUsableOutput()
+}
+
 func (o *OpenAIResponsesResponse) HasImageGenerationCall() bool {
 	if len(o.Output) == 0 {
 		return false
@@ -373,6 +399,35 @@ type ResponsesOutput struct {
 	Arguments json.RawMessage          `json:"arguments,omitempty"`
 }
 
+func (r *ResponsesOutput) HasUsableOutput() bool {
+	if r == nil {
+		return false
+	}
+	typeName := strings.TrimSpace(r.Type)
+	switch typeName {
+	case "", ResponsesOutputTypeReasoning:
+		return false
+	case ResponsesOutputTypeMessage:
+		for _, content := range r.Content {
+			switch content.Type {
+			case "output_text":
+				if strings.TrimSpace(content.Text) != "" {
+					return true
+				}
+			case "refusal":
+				if strings.TrimSpace(content.Refusal) != "" || strings.TrimSpace(content.Text) != "" {
+					return true
+				}
+			}
+		}
+		return false
+	default:
+		// Tool calls, image/media calls, computer actions, and unknown future
+		// non-reasoning items are useful output and must fail open.
+		return true
+	}
+}
+
 // ArgumentsString returns function call arguments in the string form expected by Chat Completions.
 func (r *ResponsesOutput) ArgumentsString() string {
 	if r == nil {
@@ -389,6 +444,7 @@ func ResponsesArgumentsString(arguments json.RawMessage) string {
 type ResponsesOutputContent struct {
 	Type        string        `json:"type"`
 	Text        string        `json:"text"`
+	Refusal     string        `json:"refusal,omitempty"`
 	Annotations []interface{} `json:"annotations"`
 }
 
@@ -413,10 +469,11 @@ const (
 
 // ResponsesStreamResponse 用于处理 /v1/responses 流式响应
 type ResponsesStreamResponse struct {
-	Type     string                   `json:"type"`
-	Response *OpenAIResponsesResponse `json:"response,omitempty"`
-	Delta    string                   `json:"delta,omitempty"`
-	Item     *ResponsesOutput         `json:"item,omitempty"`
+	Type           string                   `json:"type"`
+	Response       *OpenAIResponsesResponse `json:"response,omitempty"`
+	SequenceNumber *int64                   `json:"sequence_number,omitempty"`
+	Delta          string                   `json:"delta,omitempty"`
+	Item           *ResponsesOutput         `json:"item,omitempty"`
 	// - response.function_call_arguments.delta
 	// - response.function_call_arguments.done
 	OutputIndex  *int                           `json:"output_index,omitempty"`

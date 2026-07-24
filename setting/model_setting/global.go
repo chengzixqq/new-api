@@ -36,6 +36,7 @@ func (p ChatCompletionsToResponsesPolicy) IsChannelEnabled(channelID int, channe
 
 type GlobalSettings struct {
 	PassThroughRequestEnabled        bool                             `json:"pass_through_request_enabled"`
+	ResponsesEmptyOutputGuardEnabled bool                             `json:"responses_empty_output_guard_enabled"`
 	ThinkingModelBlacklist           []string                         `json:"thinking_model_blacklist"`
 	ChatCompletionsToResponsesPolicy ChatCompletionsToResponsesPolicy `json:"chat_completions_to_responses_policy"`
 	SSEMaxEventSizeMB                *int                             `json:"sse_max_event_size_mb"`
@@ -67,6 +68,13 @@ func init() {
 
 func GetGlobalSettings() *GlobalSettings {
 	return &globalSettings
+}
+
+func ResponsesEmptyOutputGuardEnabled(channelOverride *bool) bool {
+	if channelOverride != nil {
+		return *channelOverride
+	}
+	return globalSettings.ResponsesEmptyOutputGuardEnabled
 }
 
 // GetSSEMaxEventSizeBytes resolves the maximum size of one upstream SSE event.

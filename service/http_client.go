@@ -7,10 +7,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"golang.org/x/net/http2"
@@ -38,7 +40,13 @@ var (
 	proxyClients            = make(map[string]*http.Client)
 	proxyClientsH1          = make(map[string]*http.Client)
 	mediaProxyClients       = make(map[string]*http.Client)
+	legacyProxyURLWarnings  sync.Map
 )
+
+type proxyURLConfig struct {
+	parsedURL *url.URL
+	cacheKey  string
+}
 
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	urlStr := req.URL.String()
@@ -235,7 +243,11 @@ func GetMediaWorkerHTTPClient() *http.Client {
 // response-header timeout. The full body lifetime remains controlled by the
 // request context so long, continuously flowing videos are not cut off.
 func GetMediaHTTPClientWithProxy(proxyURL string) (*http.Client, error) {
-	if proxyURL == "" {
+	config, err := runtimeProxyURLConfig(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL: %w", err)
+	}
+	if config == nil {
 		if mediaWorkerHTTPClient == nil {
 			return nil, fmt.Errorf("media HTTP client is not initialized")
 		}
@@ -243,7 +255,7 @@ func GetMediaHTTPClientWithProxy(proxyURL string) (*http.Client, error) {
 	}
 
 	proxyClientLock.Lock()
-	if client, ok := mediaProxyClients[proxyURL]; ok {
+	if client, ok := mediaProxyClients[config.cacheKey]; ok {
 		proxyClientLock.Unlock()
 		return client, nil
 	}
@@ -261,13 +273,13 @@ func GetMediaHTTPClientWithProxy(proxyURL string) (*http.Client, error) {
 
 	proxyClientLock.Lock()
 	defer proxyClientLock.Unlock()
-	if cached, ok := mediaProxyClients[proxyURL]; ok {
+	if cached, ok := mediaProxyClients[config.cacheKey]; ok {
 		if transport, ok := client.Transport.(*http.Transport); ok {
 			transport.CloseIdleConnections()
 		}
 		return cached, nil
 	}
-	mediaProxyClients[proxyURL] = client
+	mediaProxyClients[config.cacheKey] = client
 	return client, nil
 }
 
@@ -277,12 +289,11 @@ func GetSSRFProtectedHTTPClient() *http.Client {
 	return ssrfProtectedHTTPClient
 }
 
-// GetHttpClientWithProxy returns the default client or a proxy-enabled one when proxyURL is provided.
-func GetHttpClientWithProxy(proxyURL string) (*http.Client, error) {
-	if proxyURL == "" {
-		return GetHttpClient(), nil
+func newProxyURLConfig(parsedURL *url.URL) *proxyURLConfig {
+	return &proxyURLConfig{
+		parsedURL: parsedURL,
+		cacheKey:  parsedURL.String(),
 	}
-	return NewProxyHttpClient(proxyURL)
 }
 
 // ResetProxyClientCache 清空代理客户端缓存，确保下次使用时重新初始化
@@ -343,9 +354,104 @@ func dialProxyContext(ctx context.Context, dialer proxy.Dialer, network, addr st
 	}
 }
 
-// NewProxyHttpClient 创建支持代理的 HTTP 客户端
-func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
-	if proxyURL == "" {
+func warnLegacyProxyURLOnce(config *proxyURLConfig) {
+	if _, loaded := legacyProxyURLWarnings.LoadOrStore(config.cacheKey, struct{}{}); loaded {
+		return
+	}
+	logger.LogWarn(
+		context.Background(),
+		fmt.Sprintf(
+			"legacy proxy URL suffix ignored at runtime: scheme=%s host=%s; update the channel proxy setting",
+			config.parsedURL.Scheme,
+			config.parsedURL.Host,
+		),
+	)
+}
+
+// NormalizeProxyURL validates a proxy URL using runtime-compatible rules and returns its canonical cache key.
+func NormalizeProxyURL(rawProxyURL string) (string, error) {
+	parsedURL, legacySuffixStripped, err := common.ParseProxyURLRuntime(rawProxyURL)
+	if err != nil {
+		return "", err
+	}
+	if parsedURL == nil {
+		return "", nil
+	}
+	config := newProxyURLConfig(parsedURL)
+	if legacySuffixStripped {
+		warnLegacyProxyURLOnce(config)
+	}
+	return config.cacheKey, nil
+}
+
+// ValidateProxyURL validates a channel proxy URL without connecting to it.
+func ValidateProxyURL(rawProxyURL string) error {
+	_, err := common.ParseProxyURLStrict(rawProxyURL)
+	return err
+}
+
+func runtimeProxyURLConfig(rawProxyURL string) (*proxyURLConfig, error) {
+	parsedURL, legacySuffixStripped, err := common.ParseProxyURLRuntime(strings.TrimSpace(rawProxyURL))
+	if err != nil {
+		return nil, err
+	}
+	if parsedURL == nil {
+		return nil, nil
+	}
+	config := newProxyURLConfig(parsedURL)
+	if legacySuffixStripped {
+		warnLegacyProxyURLOnce(config)
+	}
+	return config, nil
+}
+
+func buildProxyHTTPClient(parsedURL *url.URL, http1Only bool) (*http.Client, error) {
+	var auth *proxy.Auth
+	if parsedURL.User != nil {
+		auth = &proxy.Auth{User: parsedURL.User.Username()}
+		if password, ok := parsedURL.User.Password(); ok {
+			auth.Password = password
+		}
+	}
+
+	var dialContext func(context.Context, string, string) (net.Conn, error)
+	var proxyFunc func(*http.Request) (*url.URL, error)
+	switch parsedURL.Scheme {
+	case "http", "https":
+		proxyFunc = http.ProxyURL(parsedURL)
+	case "socks5", "socks5h":
+		forwardDialer := &net.Dialer{
+			Timeout:   configuredUpstreamTimeout(common.RelayDialTimeout, upstreamDialTimeout),
+			KeepAlive: upstreamTCPKeepAlive,
+		}
+		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, forwardDialer)
+		if err != nil {
+			return nil, err
+		}
+		dialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialProxyContext(ctx, dialer, network, addr)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported proxy scheme: %s, must be http, https, socks5 or socks5h", parsedURL.Scheme)
+	}
+
+	if http1Only {
+		return buildUpstreamHTTPClient(buildUpstreamTransportHTTP1Only(proxyFunc, dialContext)), nil
+	}
+	transport, _, err := buildUpstreamTransport(proxyFunc, dialContext)
+	if err != nil {
+		return nil, err
+	}
+	return buildUpstreamHTTPClient(transport), nil
+}
+
+// GetHttpClientWithProxy returns the default client or a cached proxy-enabled client.
+func GetHttpClientWithProxy(rawProxyURL string) (*http.Client, error) {
+	config, err := runtimeProxyURLConfig(rawProxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL: %w", err)
+	}
+	if config == nil {
 		if client := GetHttpClient(); client != nil {
 			return client, nil
 		}
@@ -354,114 +460,67 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 
 	proxyClientLock.Lock()
 	defer proxyClientLock.Unlock()
-	if client, ok := proxyClients[proxyURL]; ok {
+	if client := proxyClients[config.cacheKey]; client != nil {
 		return client, nil
 	}
-
-	parsedURL, err := url.Parse(proxyURL)
+	client, err := buildProxyHTTPClient(config.parsedURL, false)
 	if err != nil {
-		return nil, fmt.Errorf("invalid proxy URL")
+		return nil, err
 	}
-
-	switch parsedURL.Scheme {
-	case "http", "https":
-		transport, _, err := buildUpstreamTransport(http.ProxyURL(parsedURL), nil)
-		if err != nil {
-			return nil, err
-		}
-		client := buildUpstreamHTTPClient(transport)
-		proxyClients[proxyURL] = client
-		return client, nil
-
-	case "socks5", "socks5h":
-		// 获取认证信息
-		var auth *proxy.Auth
-		if parsedURL.User != nil {
-			auth = &proxy.Auth{
-				User:     parsedURL.User.Username(),
-				Password: "",
-			}
-			if password, ok := parsedURL.User.Password(); ok {
-				auth.Password = password
-			}
-		}
-
-		// 创建 SOCKS5 代理拨号器
-		// proxy.SOCKS5 使用 tcp 参数，所有 TCP 连接包括 DNS 查询都将通过代理进行。行为与 socks5h 相同
-		forwardDialer := &net.Dialer{
-			Timeout:   configuredUpstreamTimeout(common.RelayDialTimeout, upstreamDialTimeout),
-			KeepAlive: upstreamTCPKeepAlive,
-		}
-		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, forwardDialer)
-		if err != nil {
-			return nil, err
-		}
-
-		transport, _, err := buildUpstreamTransport(nil, func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialProxyContext(ctx, dialer, network, addr)
-		})
-		if err != nil {
-			return nil, err
-		}
-		client := buildUpstreamHTTPClient(transport)
-		proxyClients[proxyURL] = client
-		return client, nil
-
-	default:
-		return nil, fmt.Errorf("unsupported proxy scheme: %s, must be http, https, socks5 or socks5h", parsedURL.Scheme)
-	}
+	proxyClients[config.cacheKey] = client
+	return client, nil
 }
 
-// NewProxyHttpClientHTTP1Only 创建强制 HTTP/1.1 + 支持代理的 HTTP 客户端
-func NewProxyHttpClientHTTP1Only(proxyURL string) (*http.Client, error) {
-	if proxyURL == "" {
+// NewProxyHttpClientHTTP1Only creates a cached HTTP/1.1-only proxy client.
+func NewProxyHttpClientHTTP1Only(rawProxyURL string) (*http.Client, error) {
+	config, err := runtimeProxyURLConfig(rawProxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL: %w", err)
+	}
+	if config == nil {
 		return GetHttpClientHTTP1Only(), nil
 	}
 
 	proxyClientLock.Lock()
 	defer proxyClientLock.Unlock()
-	if client, ok := proxyClientsH1[proxyURL]; ok {
+	if client := proxyClientsH1[config.cacheKey]; client != nil {
 		return client, nil
 	}
-
-	parsedURL, err := url.Parse(proxyURL)
+	client, err := buildProxyHTTPClient(config.parsedURL, true)
 	if err != nil {
-		return nil, fmt.Errorf("invalid proxy URL")
+		return nil, err
 	}
-
-	var transport *http.Transport
-	switch parsedURL.Scheme {
-	case "http", "https":
-		transport = buildUpstreamTransportHTTP1Only(http.ProxyURL(parsedURL), nil)
-
-	case "socks5", "socks5h":
-		var auth *proxy.Auth
-		if parsedURL.User != nil {
-			auth = &proxy.Auth{
-				User:     parsedURL.User.Username(),
-				Password: "",
-			}
-			if password, ok := parsedURL.User.Password(); ok {
-				auth.Password = password
-			}
-		}
-		forwardDialer := &net.Dialer{
-			Timeout:   configuredUpstreamTimeout(common.RelayDialTimeout, upstreamDialTimeout),
-			KeepAlive: upstreamTCPKeepAlive,
-		}
-		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, forwardDialer)
-		if err != nil {
-			return nil, err
-		}
-		transport = buildUpstreamTransportHTTP1Only(nil, func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialProxyContext(ctx, dialer, network, addr)
-		})
-
-	default:
-		return nil, fmt.Errorf("unsupported proxy scheme: %s, must be http, https, socks5 or socks5h", parsedURL.Scheme)
-	}
-
-	client := buildUpstreamHTTPClient(transport)
-	proxyClientsH1[proxyURL] = client
+	proxyClientsH1[config.cacheKey] = client
 	return client, nil
+}
+
+// InvalidateProxyClient removes all cached client variants for one proxy.
+func InvalidateProxyClient(rawProxyURL string) {
+	config, err := runtimeProxyURLConfig(rawProxyURL)
+	if err != nil || config == nil {
+		return
+	}
+
+	proxyClientLock.Lock()
+	clients := []*http.Client{
+		proxyClients[config.cacheKey],
+		proxyClientsH1[config.cacheKey],
+		mediaProxyClients[config.cacheKey],
+	}
+	delete(proxyClients, config.cacheKey)
+	delete(proxyClientsH1, config.cacheKey)
+	delete(mediaProxyClients, config.cacheKey)
+	proxyClientLock.Unlock()
+
+	for _, client := range clients {
+		if client != nil {
+			client.CloseIdleConnections()
+		}
+	}
+}
+
+// NewProxyHttpClient is kept for compatibility.
+// Deprecated: use GetHttpClientWithProxy.
+func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
+	return GetHttpClientWithProxy(proxyURL)
 }

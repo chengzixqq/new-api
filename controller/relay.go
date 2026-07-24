@@ -96,6 +96,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(errorMessage)))
 			}
 			newAPIError.SetMessage(common.MessageWithRequestId(errorMessage, requestId))
+			if types.IsSuppressResponseError(newAPIError) {
+				return
+			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -195,7 +198,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; retryParam.GetRetry() <= dto.MaxChannelRetries; retryParam.IncreaseRetry() {
 		if requestErr := relayRequestContextError(c); requestErr != nil {
 			newAPIError = types.NewError(requestErr, types.ErrorCodeDoRequestFailed, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 			break
@@ -207,6 +210,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = channelErr
 			break
 		}
+		maxRetries := selectedChannelMaxRetries(c, channel)
 
 		addUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -259,7 +263,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if !shouldRetry(c, newAPIError, maxRetries-retryParam.GetRetry()) {
 			break
 		}
 	}
@@ -287,6 +291,16 @@ func addUsedChannel(c *gin.Context, channelId int) {
 	useChannel := c.GetStringSlice("use_channel")
 	useChannel = append(useChannel, fmt.Sprintf("%d", channelId))
 	c.Set("use_channel", useChannel)
+}
+
+func selectedChannelMaxRetries(c *gin.Context, channel *model.Channel) int {
+	if channelSetting, ok := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting); ok {
+		return service.ResolveMaxRetries(channelSetting.MaxRetries)
+	}
+	if channel == nil {
+		return service.ResolveMaxRetries(nil)
+	}
+	return service.ResolveMaxRetries(channel.GetSetting().MaxRetries)
 }
 
 func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
@@ -382,14 +396,14 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
-	if types.IsChannelError(openaiErr) {
-		return true
-	}
 	if types.IsSkipRetryError(openaiErr) {
 		return false
 	}
 	if retryTimes <= 0 {
 		return false
+	}
+	if types.IsChannelError(openaiErr) {
+		return true
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false
@@ -575,7 +589,7 @@ func RelayTask(c *gin.Context) {
 		Retry:       common.GetPointer(0),
 	}
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; retryParam.GetRetry() <= dto.MaxChannelRetries; retryParam.IncreaseRetry() {
 		if requestErr := relayRequestContextError(c); requestErr != nil {
 			taskErr = service.TaskErrorWrapperLocal(requestErr, "client_request_canceled", http.StatusRequestTimeout)
 			break
@@ -599,6 +613,7 @@ func RelayTask(c *gin.Context) {
 				break
 			}
 		}
+		maxRetries := selectedChannelMaxRetries(c, channel)
 
 		addUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -628,7 +643,7 @@ func RelayTask(c *gin.Context) {
 				types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode))
 		}
 
-		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
+		if !shouldRetryTaskRelay(c, channel.Id, taskErr, maxRetries-retryParam.GetRetry()) {
 			break
 		}
 	}

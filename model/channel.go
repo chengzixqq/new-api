@@ -452,26 +452,32 @@ func BatchInsertChannels(channels []Channel) error {
 	return tx.Commit().Error
 }
 
-func BatchDeleteChannels(ids []int) error {
+func BatchDeleteChannels(ids []int) (int64, error) {
 	if len(ids) == 0 {
-		return nil
+		return 0, nil
 	}
 	// 使用事务 分批删除channel表和abilities表
 	tx := DB.Begin()
 	if tx.Error != nil {
-		return tx.Error
+		return 0, tx.Error
 	}
+	var deletedCount int64
 	for _, chunk := range lo.Chunk(ids, 200) {
-		if err := tx.Where("id in (?)", chunk).Delete(&Channel{}).Error; err != nil {
+		result := tx.Where("id in (?)", chunk).Delete(&Channel{})
+		if result.Error != nil {
 			tx.Rollback()
-			return err
+			return 0, result.Error
 		}
+		deletedCount += result.RowsAffected
 		if err := tx.Where("channel_id in (?)", chunk).Delete(&Ability{}).Error; err != nil {
 			tx.Rollback()
-			return err
+			return 0, err
 		}
 	}
-	return tx.Commit().Error
+	if err := tx.Commit().Error; err != nil {
+		return 0, err
+	}
+	return deletedCount, nil
 }
 
 func (channel *Channel) GetPriority() int64 {
@@ -950,6 +956,13 @@ func (channel *Channel) ValidateSettings() error {
 			*channelParams.SSEMaxEventSizeMB > constant.MaxSSEMaxEventSizeMB) {
 		return fmt.Errorf("sse_max_event_size_mb must be between %d and %d", constant.MinSSEMaxEventSizeMB, constant.MaxSSEMaxEventSizeMB)
 	}
+	if channelParams.MaxRetries != nil &&
+		(*channelParams.MaxRetries < dto.MinChannelRetries || *channelParams.MaxRetries > dto.MaxChannelRetries) {
+		return fmt.Errorf("max_retries must be between %d and %d", dto.MinChannelRetries, dto.MaxChannelRetries)
+	}
+	if _, err := common.ParseProxyURLStrict(channelParams.Proxy); err != nil {
+		return fmt.Errorf("invalid channel proxy: %w", err)
+	}
 	channelOtherSettings := &dto.ChannelOtherSettings{}
 	if channel.OtherSettings != "" {
 		err := common.UnmarshalJsonStr(channel.OtherSettings, channelOtherSettings)
@@ -993,6 +1006,11 @@ func (channel *Channel) ValidateSettings() error {
 		(*channelOtherSettings.HTTP1BodyThresholdKiB < dto.MinHTTP1BodyThresholdKiB ||
 			*channelOtherSettings.HTTP1BodyThresholdKiB > dto.MaxHTTP1BodyThresholdKiB) {
 		return fmt.Errorf("http1_body_threshold_kib must be between %d and %d", dto.MinHTTP1BodyThresholdKiB, dto.MaxHTTP1BodyThresholdKiB)
+	}
+	if channel.Type == constant.ChannelTypeAdvancedCustom && channelOtherSettings.UpstreamModelUpdateCheckEnabled {
+		if _, ok := channelOtherSettings.AdvancedCustom.ModelListRoute(); !ok {
+			return fmt.Errorf("advanced custom channels require a %s route when upstream model update checks are enabled", dto.AdvancedCustomModelListPath)
+		}
 	}
 	return nil
 }

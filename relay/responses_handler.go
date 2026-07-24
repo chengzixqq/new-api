@@ -144,6 +144,13 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
+		if newAPIError.GetErrorCode() == types.ErrorCodeUpstreamEmptyResponse {
+			usageDto, _ := usage.(*dto.Usage)
+			if settleErr := service.PostTextConsumeQuotaForUpstreamEmptyResponse(c, info, usageDto); settleErr != nil {
+				logger.LogError(c, "empty response billing settlement required fallback: "+settleErr.Error())
+			}
+			return newAPIError
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError

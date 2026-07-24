@@ -74,6 +74,7 @@ const (
 	ErrorCodeBadResponse            ErrorCode = "bad_response"
 	ErrorCodeBadResponseBody        ErrorCode = "bad_response_body"
 	ErrorCodeEmptyResponse          ErrorCode = "empty_response"
+	ErrorCodeUpstreamEmptyResponse  ErrorCode = "upstream_empty_response"
 	ErrorCodeAwsInvokeError         ErrorCode = "aws_invoke_error"
 	ErrorCodeModelNotFound          ErrorCode = "model_not_found"
 	ErrorCodePromptBlocked          ErrorCode = "prompt_blocked"
@@ -88,14 +89,15 @@ const (
 )
 
 type NewAPIError struct {
-	Err            error
-	RelayError     any
-	skipRetry      bool
-	recordErrorLog *bool
-	errorType      ErrorType
-	errorCode      ErrorCode
-	StatusCode     int
-	Metadata       json.RawMessage
+	Err              error
+	RelayError       any
+	skipRetry        bool
+	suppressResponse bool
+	recordErrorLog   *bool
+	errorType        ErrorType
+	errorCode        ErrorCode
+	StatusCode       int
+	Metadata         json.RawMessage
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.
@@ -378,9 +380,19 @@ func IsSkipRetryError(err *NewAPIError) bool {
 	return err.skipRetry
 }
 
+func IsSuppressResponseError(err *NewAPIError) bool {
+	return err != nil && err.suppressResponse
+}
+
 func ErrOptionWithSkipRetry() NewAPIErrorOptions {
 	return func(e *NewAPIError) {
 		e.skipRetry = true
+	}
+}
+
+func ErrOptionWithSuppressResponse() NewAPIErrorOptions {
+	return func(e *NewAPIError) {
+		e.suppressResponse = true
 	}
 }
 

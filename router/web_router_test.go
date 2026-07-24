@@ -13,8 +13,8 @@ import (
 func TestFrontendNoRouteHandlerRejectsMissingStaticAsset(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	engine.NoRoute(frontendNoRouteHandler(ThemeAssets{
-		DefaultIndexPage: []byte("<!doctype html><div id=\"root\"></div>"),
+	engine.NoRoute(frontendNoRouteHandler(WebAssets{
+		IndexPage: []byte("<!doctype html><div id=\"root\"></div>"),
 	}))
 
 	request := httptest.NewRequest(http.MethodGet, "/static/js/async/OLD_HASH.js", nil)
@@ -31,9 +31,8 @@ func TestFrontendNoRouteHandlerKeepsSpaFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	indexPage := []byte("<!doctype html><div id=\"root\"></div>")
-	engine.NoRoute(frontendNoRouteHandler(ThemeAssets{
-		DefaultIndexPage: indexPage,
-		ClassicIndexPage: indexPage,
+	engine.NoRoute(frontendNoRouteHandler(WebAssets{
+		IndexPage: indexPage,
 	}))
 
 	request := httptest.NewRequest(http.MethodGet, "/dashboard/channels", nil)

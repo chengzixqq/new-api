@@ -1,0 +1,55 @@
+name: Build candidate OCI image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'codex/sync-*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build linux/amd64 candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3b # v7.0.0
+
+      - name: Write candidate version
+        shell: bash
+        run: echo "candidate-${GITHUB_SHA::12}" > VERSION
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build OCI archive
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          tags: new-api:candidate-${{ github.sha }}
+          outputs: type=oci,dest=/tmp/new-api-candidate.oci.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+      - name: Record archive digest
+        shell: bash
+        run: sha256sum /tmp/new-api-candidate.oci.tar | tee /tmp/new-api-candidate.oci.tar.sha256
+
+      - name: Upload candidate image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: new-api-candidate-${{ github.sha }}
+          path: |
+            /tmp/new-api-candidate.oci.tar
+            /tmp/new-api-candidate.oci.tar.sha256
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error

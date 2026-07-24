@@ -7,7 +7,11 @@ on:
       - 'codex/sync-*'
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: candidate-image-receipt-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -40,8 +44,12 @@ jobs:
           sbom: false
 
       - name: Record archive digest
+        id: digest
         shell: bash
-        run: sha256sum /tmp/new-api-candidate.oci.tar | tee /tmp/new-api-candidate.oci.tar.sha256
+        run: |
+          SHA256=$(sha256sum /tmp/new-api-candidate.oci.tar | cut -d' ' -f1)
+          echo "${SHA256}  new-api-candidate.oci.tar" | tee /tmp/new-api-candidate.oci.tar.sha256
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
 
       - name: Upload candidate image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -53,3 +61,18 @@ jobs:
           compression-level: 0
           retention-days: 7
           if-no-files-found: error
+
+      - name: Publish verifiable build receipt
+        shell: bash
+        env:
+          OCI_SHA256: ${{ steps.digest.outputs.sha256 }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if git ls-remote --exit-code --refs origin refs/notes/candidate-image >/dev/null; then
+            git fetch origin refs/notes/candidate-image:refs/notes/candidate-image
+          fi
+          git notes --ref=candidate-image add -f -m "artifact=new-api-candidate-${GITHUB_SHA}
+          oci_sha256=${OCI_SHA256}
+          run_url=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" "${GITHUB_SHA}"
+          git push origin refs/notes/candidate-image

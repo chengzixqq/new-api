@@ -22,27 +22,26 @@
 6. 不在文档、Git、命令输出或聊天中写入 API Token、SSH 密码、数据库密码、
    `.env` 内容或备份内的敏感配置。
 
-## 2. 仓库快照（2026-07-14）
+## 2. 仓库快照（2026-07-24）
 
 | 项目 | 当前快照 |
 | --- | --- |
 | 本地仓库 | `D:\project\newapi` |
 | 用户远端 | `origin = https://github.com/chengzixqq/new-api.git` |
 | 官方远端 | `upstream = https://github.com/QuantumNous/new-api.git` |
-| 当前分支 | `sync/custom-pricing-latest-7c28993f` |
-| 当前 HEAD | `a6ea9503cfd5330f3bbd5a4a9611b33a5ed35e89`（仅比代码合并多一份复核文档） |
-| 当前生产源码归档 | 本机 `D:\project\newapi\output\deploy\newapi-source-a6ea9503-20260714T215817Z.tgz`；服务器 `/data/new-api/builds/newapi-source-a6ea9503-20260714T215817Z.tgz`；SHA-256 `38e13b6851ef59d1ad14f6b7eec12d3473ee74e9d59b1da4bb02f2e7a9825147` |
-| 当前代码合并点 | `490e617e106909a0b930ada15e51c85c53bc14c3` |
-| 本轮官方基线 | `7c28993f6bd9e92616f3f578212577f8b7c40b45` |
-| 合并前计费修复 | `c56f31e503f2ca85b35499a9de8c1858b6e4d8df` |
-| 当前生产镜像快照 | `new-api:upstream-a6ea9503-20260714T215817Z` |
-| 当前镜像 ID 快照 | `sha256:f0cf6f5a4227a1d7a66375f583f9bdf919c62c91ad79c9527d50d811c7915a6a` |
-| 保留回滚镜像 | 最新应用级回滚为 `new-api:rollback-pre-health-linear-axis-20260714T213311Z`；上一生产镜像原标签 `new-api:upstream-a6ea9503-20260714T160241Z` 同时保留，两者均指向 `sha256:fc6ba5572a911e74a3f2364444282f47905d9e5f8944d963d19f14913bc4a2b6` |
-| 当前完整备份 | 服务器 `/data/new-api/backups/deploy-20260714T213311Z-pre-health-linear-axis.tgz`；本机 `D:\project\newapi\output\deploy\backups\deploy-20260714T213311Z-pre-health-linear-axis.tgz`；SHA-256 `3c8dc3dd490f9f94de165511f0810bd2b607abad334a38dbb772cea34db562f1` |
-| 当前部署验收记录 | `D:\project\newapi\output\deploy\DEPLOYMENT_RESULT-20260714T220700Z.txt`；服务器 `/data/new-api/builds/DEPLOYMENT_RESULT-20260714T220700Z.txt`；SHA-256 `bfe99d500a8534282acd68e6a89903a652a61a5e929901757ba50b7714063a47` |
-| 当前模型健康池映射 | `CCMAX-1 -> CC-MAX / CCMAX-B池 / 渠道 58`；`CCMAX-2 -> CC-MAX / CCMAX-A池 / 渠道 84`；这是上线后管理员在界面保存的最终映射，后续以实时配置为准 |
-| 池明细发布状态 | `model_health_setting.pool_details_enabled=true`；两池启用前均已超过 30 次真实渠道尝试 |
-| 传输配置快照 | 管理员上线后设为全局 `auto + pool=32`；57 号渠道继承全局 |
+| 当前候选分支 | `codex/sync-custom-84a79b68` |
+| 合并前检查点 | `23008615562c86664f94c2ee7904b3a4f34e6ec5` |
+| 本轮代码合并点 | `e2a898cf0cacd34042f636f260b6b348557e9966` |
+| 本轮官方锁定基线 | `84a79b6807ac1a679ca86f34c8c6f39175c294d8` |
+| 合并前本地源码备份 | `D:\project\newapi-backups\sync-84a79b68-20260724T194105\workspace-source-v2.tgz`；2388 个文件；SHA-256 `42C6D5650E87EA21B99CC9F661CE1698D375BBCE5D8248C0865AAC8A4CD9A328` |
+| 候选镜像构建 | `.github/workflows/candidate-image.yml` 使用仓库原始 `Dockerfile` 构建 `linux/amd64` OCI 归档；成功回执写入 `refs/notes/candidate-image` |
+| 2026-07-14 生产镜像历史快照 | `new-api:upstream-a6ea9503-20260714T215817Z`；镜像 ID `sha256:f0cf6f5a4227a1d7a66375f583f9bdf919c62c91ad79c9527d50d811c7915a6a` |
+| 2026-07-14 回滚镜像历史快照 | `new-api:rollback-pre-health-linear-axis-20260714T213311Z`；上一生产标签 `new-api:upstream-a6ea9503-20260714T160241Z`；当时均指向 `sha256:fc6ba5572a911e74a3f2364444282f47905d9e5f8944d963d19f14913bc4a2b6` |
+| 2026-07-14 完整备份历史快照 | 服务器 `/data/new-api/backups/deploy-20260714T213311Z-pre-health-linear-axis.tgz`；本机 `D:\project\newapi\output\deploy\backups\deploy-20260714T213311Z-pre-health-linear-axis.tgz`；SHA-256 `3c8dc3dd490f9f94de165511f0810bd2b607abad334a38dbb772cea34db562f1` |
+| 2026-07-14 部署验收历史快照 | `D:\project\newapi\output\deploy\DEPLOYMENT_RESULT-20260714T220700Z.txt`；服务器 `/data/new-api/builds/DEPLOYMENT_RESULT-20260714T220700Z.txt`；SHA-256 `bfe99d500a8534282acd68e6a89903a652a61a5e929901757ba50b7714063a47` |
+| 2026-07-14 模型健康池历史快照 | `CCMAX-1 -> CC-MAX / CCMAX-B池 / 渠道 58`；`CCMAX-2 -> CC-MAX / CCMAX-A池 / 渠道 84`；后续以实时配置为准 |
+| 2026-07-14 池明细历史快照 | `model_health_setting.pool_details_enabled=true`；两池启用前均已超过 30 次真实渠道尝试 |
+| 2026-07-14 传输配置历史快照 | 当时全局 `auto + pool=32`；57 号渠道继承全局 |
 | 节点名约束 | `NODE_NAME=newapi-us-1` |
 
 生产镜像与容器状态会变化。下一次部署前必须在服务器上重新核对运行镜像、镜像 ID、
@@ -55,15 +54,17 @@ Compose、健康状态、数据库、Redis 和备份，不得把上表当成实�
 | 防漏扣、防爆扣与缓存写入结算 | 已实现、生产运行 | `service/text_quota.go`、`service/usage_helpr.go` |
 | 模型级及分组级精确定价 | 已实现 | `types/price_data.go`、`model/pricing.go`、`relay/helper/price.go` |
 | 模型最低费用与补全倍率解锁 | 已实现 | `setting/ratio_setting/model_ratio.go` |
-| 模型广场后台直接编辑价格 | 已实现，default/classic 均有 UI | `controller/model_meta.go`、两套 pricing 前端 |
+| 模型广场后台直接编辑价格 | 已实现，已迁移到官方单前端 | `controller/model_meta.go`、`web/src` |
 | 上游连接预热及状态 | 已实现 | `service/upstream_warmup*.go` |
 | 上游分段 trace 与日志展示 | 已实现 | `relay/common/upstream_trace.go` |
 | 上游 HTTP/2 分片池、混合模式和 HTTP/1.1 兼容 | 已实现，待生产灰度 | `service/upstream_transport_pool.go`、`service/http_client.go` |
 | 模型健康状态（主动批次探测 + 分组汇总 + 池/渠道尝试明细） | 已实现、生产运行；单轮多次探测待灰度启用 | `controller/model_health.go`、`pkg/perf_metrics`、`service/model_health_*.go` |
 | Cowork / Claude Desktop adaptive thinking 兼容 | 已实现、按渠道启用 | `relay/common/cowork_adaptive_thinking.go` |
 | 模型请求滑动窗口限流和管理员独立档 | 已实现 | `middleware/model-rate-limit.go` |
-| 中文、繁中及两套面板显示补全 | 已实现 | `web/default/src/i18n`、`web/classic/src/i18n` |
+| 中文、繁中及单面板显示补全 | 已实现 | `web/src/i18n` |
 | Grok Chat Completions 经 Responses 上游转发 | 已实现、本地待部署并按渠道启用 | `relay/chat_completions_via_responses.go`、`service/relayconvert/internal/oai_chat/to_oai_responses_req.go` |
+| Responses 推理独占空回复保护 | 已实现、候选分支待灰度 | `relay/channel/openai/relay_responses.go`、`relay/responses_handler.go` |
+| 渠道级重试次数覆盖 | 已实现、候选分支待灰度 | `dto/channel_settings.go`、`controller/relay.go` |
 | 服务器端自动推断缓存亲和键 | **仅有设计文档，尚未实现** | `CACHE_AFFINITY_SERVER_SIDE_FALLBACK.md` |
 
 ### 3.1 Grok Chat Completions 转 Responses
@@ -77,6 +78,26 @@ Grok 渠道使用该策略时保留 `reasoning_effort -> reasoning.effort`，但
 启用时必须同时满足：全局与渠道请求体透传均关闭；策略只选中目标 Sub2API 渠道；
 模型正则只覆盖预期的 `grok-4.5`。该变更当前仅在本地工作区完成测试，生产启用和镜像
 替换仍按第 16 节的备份、确认、灰度与回滚流程执行。
+
+### 3.2 Responses 空回复保护、重试与结算
+
+`global.responses_empty_output_guard_enabled` 是全局开关，编译默认值为 `false`。渠道设置
+`responses_empty_output_guard` 是可空布尔值：`null` 继承全局，`true` 强制启用，`false`
+强制关闭。渠道设置 `max_retries` 同样可空：`null` 继承系统重试次数，显式 `0` 表示不重试，
+允许范围为 `0..10`。
+
+保护开启后，Responses 非流式响应若只有 reasoning/encrypted content 而没有可见消息、拒绝、
+工具或媒体输出，网关返回 HTTP 424 和 `upstream_empty_response`。流式响应会抑制上游
+`response.completed`，只发送一个兼容官方事件结构的 `response.failed`，沿用序列号且不转发
+`encrypted_content`。该错误无论全局或渠道普通重试配置如何都不再选取其他渠道重试，避免
+同一空回复重复产生上游费用。
+
+上游 usage 有可用 input/output token 时按可信 usage 结算；没有可用 input/output token
+（包括只有 `total_tokens`）时使用预扣费作为计费下限。首次结算失败但能够成功锁定预扣费时，
+仍按锁定额度正式消费；只有最终无法确认结算时才将本次统计 quota 记为 0、跳过消费统计并在
+管理员日志记录未确认状态。未来生产灰度仅计划将渠道 65、95 的
+`responses_empty_output_guard` 设为 `true`，两者 `max_retries` 保持 `null` 继承普通错误重试；
+本轮没有修改生产配置、镜像或容器。
 
 ## 4. 计费安全与缓存写入结算
 
@@ -408,17 +429,19 @@ Claude 请求、未启用渠道以及不符合标记的请求必须原样透传�
 - `ModelRequestRateLimitAdminCount`
 - `ModelRequestRateLimitAdminSuccessCount`
 
-default/classic 两套设置页都必须保留管理员档配置。
+单 `web/` 设置页必须保留管理员档配置。
 
-## 12. 前端与翻译
+## 12. 前端、会话与翻译
 
-- default 与 classic 两套面板都维护，不允许只修其中一套。
-- 模型广场、价格详情、动态定价、分组价格、最低费用、使用日志 trace、上游预热、
-  模型健康状态、HTTP/1.1、Cowork 和限流配置均要保持可用。
-- 用户可见字符串必须走 i18n；default 的 `zh`、`zh-TW` 不得留下英文键值占位。
-- classic 固定使用 `date-fns@2.30.0`，这是此前 Docker 构建兼容修复的一部分。
+- 官方已收敛为单 `web/` 前端；旧 `web/default`、`web/classic` 不再是维护目标，所有本地
+  定价、日志、预热、模型健康、传输、Cowork、限流和 Responses 保护设置均已迁移到
+  `web/src`。
+- 用户可见字符串必须走 i18n；`web/src/i18n` 的 7 个 locale 必须保持键集合一致，中文和
+  繁中不得留下英文键值占位。
+- 官方新版认证使用短期 access token、refresh cookie、`user_sessions` 和 `auth_flows`。
+  从旧版部署到本候选版后，已有面板会话需要重新登录；不得为保留旧会话而恢复旧认证结构。
 - 合并后检查自动合并产生的重复参数、重复 state、重复 import 和锁文件漂移。
-- classic 中单纯新增许可证头、换行或格式变化不是业务魔改，不应作为功能冲突优先保留。
+- 旧双前端中的许可证头、换行、格式或构建兼容补丁不作为单前端结构下的长期魔改保留。
 
 ## 13. 不是当前已实现魔改的内容
 
@@ -447,7 +470,7 @@ default/classic 两套设置页都必须保留管理员档配置。
 
 1. 保持当前魔改分支不动。
 2. 在开始时锁定官方 SHA，例如：
-   `sync/custom-pricing-latest-<upstream-short-sha>`。
+   `codex/sync-custom-<upstream-short-sha>`。
 3. 使用普通 merge 合入锁定的 `upstream/main`，不 rebase、不强推、不直接覆盖 `main`。
 4. 冲突以官方新结构为骨架，重新接回本文档的不变量和功能，不机械选择 ours/theirs。
 5. 提交前检查 `git diff upstream/main..HEAD`，区分真实功能差异与许可证头、格式、翻译
@@ -468,8 +491,8 @@ default/classic 两套设置页都必须保留管理员档配置。
 | `service/http_client.go` | H2 保活、强制 H1、代理双缓存 | 官方 SSRF 客户端和重定向保护 |
 | `relay/channel/api_request.go` | H1 客户端选择、trace attach | 官方重试、pinger、stream 行为 |
 | `model/option.go` | 魔改配置键 | 官方 OptionMap 和新配置框架 |
-| default/classic pricing | 分组真实售价和后台编辑 | 官方新版价格页布局和动态价格 |
-| i18n 文件 | 中文、繁中完整 | 官方新键和同步工具输出 |
+| `web/src` pricing 与设置页 | 分组真实售价、后台编辑、渠道空回复和重试设置 | 官方新版价格页布局、动态价格和单前端组件结构 |
+| `web/src/i18n` | 7 个 locale 键集合一致，中文、繁中完整 | 官方新键和同步工具输出 |
 
 ### 14.3 不得被回退的官方安全能力
 
@@ -516,7 +539,10 @@ go vet ./...
 - upstream trace 全局/渠道开关、采样和日志挂载。
 - Cowork 开关与非 Cowork 请求原样透传。
 - Redis/内存滑动窗口、管理员独立档和 Redis key 隔离。
-- 两套价格 UI 的分组计算与显示。
+- 单前端价格 UI 的分组计算与显示。
+- Responses reasoning-only 空回复的非流式 424 与流式 `response.failed` 结构。
+- 空回复禁止重试、渠道 `max_retries` 的 `null/0/1..10` 语义和配置优先级。
+- 有 usage、仅 `total_tokens`、usage 缺失和结算未确认时的计费下限及统计行为。
 
 相关测试主要分布在：
 
@@ -529,7 +555,10 @@ model/pricing_*test.go
 relay/helper/price*test.go
 relay/common/*upstream_trace*test.go
 relay/common/cowork_adaptive_thinking_test.go
+relay/channel/openai/*responses*test.go
+relay/helper/*stream*test.go
 service/text_quota*test.go
+service/*billing_session*test.go
 service/quota_audio_override_test.go
 service/upstream_warmup_test.go
 service/http_client_test.go
@@ -544,33 +573,37 @@ types/price_data*test.go
 
 ### 15.3 前端检查
 
-从 `web` 安装 workspace 依赖后执行：
+从 `web` 安装依赖后执行：
 
 ```powershell
 Set-Location web
 bun install --frozen-lockfile
-
-Set-Location default
-bun run typecheck
-bun run lint
-bun run build
+bun run build:check
+bun test
 bun run i18n:sync
-
-Set-Location ..\classic
-bun run eslint
-bun run build
+bun run format:check
+bun run copyright:check
 ```
 
 `i18n:sync` 会写文件，运行前后要审查差异，不得直接提交生成器造成的无关翻译覆盖。
-classic 全量 Prettier 可能包含官方既有格式差异，应定点检查本次修改文件并以实际构建成功
-为最低放行条件。
+全量 lint 可能包含官方基线既有差异，应额外对本次修改文件执行定点 lint，并以
+`build:check` 和测试成功作为最低放行条件。
 
 ### 15.4 Docker 检查
 
-- 必须使用仓库原始 `Dockerfile` 完整构建，不能只在宿主机 `go build`。
-- Dockerfile 的 default、classic 和 Go 二进制阶段均须成功。
-- 使用独立、不可复用的候选镜像标签：
-  `new-api:upstream-<sha>-<timestamp>`。
+- 必须使用仓库原始 `Dockerfile` 完整构建单 `web/` 前端和 Go 二进制，不能只以宿主机
+  `go build` 代替容器构建。
+- 当前 Windows 主机没有可用 Docker、Podman 或 WSL 容器运行时；
+  `.github/workflows/candidate-image.yml` 在候选分支 push 后构建 `linux/amd64` OCI 归档，
+  artifact 保留 7 天，不推送镜像仓库，也不部署生产。
+- 工作流成功后会把 artifact 名、OCI 归档 SHA-256 和 Actions run URL 写入目标提交的
+  `refs/notes/candidate-image`。使用以下命令核验 HEAD 对应回执：
+
+```powershell
+git fetch origin refs/notes/candidate-image:refs/notes/candidate-image
+git notes --ref=candidate-image show HEAD
+```
+
 - 构建期间不得修改生产 Compose 或重启生产容器。
 
 ## 16. 部署、备份与回滚
@@ -620,9 +653,11 @@ classic 全量 Prettier 可能包含官方既有格式差异，应定点检查�
 - `DEPLOY_UPDATE_90ef595e.md`：client-gone 缓存估算爆扣问题的历史分析。
 - `REVIEW_TOTALTOKENS_FIX.md`：纯缓存写入被 `TotalTokens` 清零的历史复核。
 - `CACHE_AFFINITY_SERVER_SIDE_FALLBACK.md`：未实现的服务器端亲和兜底设计。
+- `OPENAI_STREAM_INTERRUPTION_BILLING_RECONCILIATION.md`：OpenAI 流式中断计费历史分析。
+- `SECURITY_PERFORMANCE_BILLING_AUDIT_2026-07-13.md`：安全、性能和计费审计历史记录。
 
-后四份文档在 2026-07-12 仍是未跟踪文件。不要擅自删除、提交或把其中旧部署状态当成
-实时事实。
+除首项官方同步记录外，其余六份本地辅助文档当前仍是未跟踪文件。不要擅自删除、提交或把
+其中旧部署状态当成实时事实；`output/` 也必须保持忽略，避免把生产备份或敏感配置纳入 Git。
 
 ## 19. 每轮同步后更新本文档
 

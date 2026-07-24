@@ -318,7 +318,8 @@ docker run --name new-api -d --restart always \
 | `SQL_DSN` | 資料庫連接字符串                                                     | - |
 | `REDIS_CONN_STRING` | Redis 連接字符串                                                  | - |
 | `STREAMING_TIMEOUT` | 流式超時時間（秒）                                                    | `300` |
-| `STREAM_SCANNER_MAX_BUFFER_MB` | 流式掃描器單行最大緩衝（MB），圖像生成等超大 `data:` 片段（如 4K 圖片 base64）需適當調大 | `64` |
+| `STREAMING_MAX_BUFFER_SIZE` | 上游 SSE 單事件大小上限（位元組），必須是 1–128 MiB 範圍內的整數 MiB | `16777216` |
+| `STREAM_SCANNER_MAX_BUFFER_MB` | 相容舊部署的上游 SSE 單事件大小上限（MiB，1–128） | 未設定 |
 | `MAX_REQUEST_BODY_MB` | 請求體最大大小（MB，**解壓縮後**計；防止超大請求/zip bomb 導致記憶體暴漲），超過將返回 `413` | `32` |
 | `AZURE_DEFAULT_API_VERSION` | Azure API 版本                                                 | `2025-04-01-preview` |
 | `ERROR_LOG_ENABLED` | 錯誤日誌開關                                                       | `false` |

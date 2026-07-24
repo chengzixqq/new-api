@@ -59,6 +59,7 @@ export const userSchema = z.object({
   last_login_at: z.number().optional(),
   DeletedAt: z.any().nullable().optional(),
   remark: z.string().optional(),
+  group_ratio_overrides: z.record(z.string(), z.number()).optional(),
   admin_permissions: z
     .record(z.string(), z.record(z.string(), z.boolean()))
     .optional(),
@@ -81,6 +82,7 @@ export interface ApiResponse<T = unknown> {
 export interface GetUsersParams {
   p?: number
   page_size?: number
+  include_group_ratio_overrides?: boolean
 }
 
 export interface GetUsersResponse {
@@ -101,6 +103,7 @@ export interface SearchUsersParams {
   status?: string
   p?: number
   page_size?: number
+  include_group_ratio_overrides?: boolean
 }
 
 export interface UserFormData {
@@ -111,6 +114,7 @@ export interface UserFormData {
   quota?: number // Only used when updating user
   group?: string // Only used when updating user
   remark?: string // Only used when updating user
+  group_ratio_overrides?: Record<string, number> // Only used when updating user
   admin_permissions?: AdminPermissionMatrix
 }
 

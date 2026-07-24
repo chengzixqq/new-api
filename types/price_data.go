@@ -29,6 +29,11 @@ const (
 	GroupBillingModePerToken   = "per-token"
 	GroupBillingModePerRequest = "per-request"
 	GroupBillingModeTieredExpr = "tiered_expr"
+
+	GroupRatioSourceGroup              = "group_ratio"
+	GroupRatioSourceGroupSpecial       = "group_group_ratio"
+	GroupRatioSourceUserOverride       = "user_group_ratio_override"
+	GroupRatioSourceModelGroupOverride = "model_group_ratio"
 )
 
 func floatPtr(value float64) *float64 {
@@ -92,13 +97,16 @@ func (p ModelGroupPricing) IsEmpty() bool {
 }
 
 type GroupRatioInfo struct {
-	GroupRatio           float64
-	GroupSpecialRatio    float64
-	HasSpecialRatio      bool
-	ModelGroupRatio      float64
-	HasModelGroupRatio   bool
-	ModelGroupPricing    *ModelGroupPricing
-	HasModelGroupPricing bool
+	GroupRatio                float64
+	GroupRatioSource          string
+	GroupSpecialRatio         float64
+	HasSpecialRatio           bool
+	UserGroupRatioOverride    float64
+	HasUserGroupRatioOverride bool
+	ModelGroupRatio           float64
+	HasModelGroupRatio        bool
+	ModelGroupPricing         *ModelGroupPricing
+	HasModelGroupPricing      bool
 }
 
 type PriceData struct {
@@ -120,6 +128,16 @@ type PriceData struct {
 	GroupRatioInfo       GroupRatioInfo
 	GroupPriceOverride   *ModelGroupPricing
 	MinQuota             int // 已折算成内部 quota 的最低额度下限；0 = 无最低费用
+}
+
+// PersonalGroupPriceMultiplier returns the final per-user multiplier that must
+// also be applied to absolute model-group price overrides. Ratio-based pricing
+// already consumes GroupRatioInfo.GroupRatio directly.
+func (p PriceData) PersonalGroupPriceMultiplier() float64 {
+	if p.GroupRatioInfo.HasUserGroupRatioOverride && isValidOtherRatio(p.GroupRatioInfo.UserGroupRatioOverride) {
+		return p.GroupRatioInfo.UserGroupRatioOverride
+	}
+	return 1
 }
 
 func (p *PriceData) AddOtherRatio(key string, ratio float64) {

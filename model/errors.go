@@ -5,6 +5,11 @@ import "errors"
 // Common errors
 var (
 	ErrDatabase = errors.New("database error")
+	// ErrInsufficientUserQuota and ErrInsufficientTokenQuota are returned by
+	// conditional quota updates. Callers must use errors.Is so the database
+	// remains the authority when concurrent requests race for the same balance.
+	ErrInsufficientUserQuota  = errors.New("insufficient user quota")
+	ErrInsufficientTokenQuota = errors.New("insufficient token quota")
 )
 
 // User auth errors

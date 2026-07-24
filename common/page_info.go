@@ -10,8 +10,11 @@ type PageInfo struct {
 	Page     int `json:"page"`      // page num 页码
 	PageSize int `json:"page_size"` // page size 页大小
 
-	Total int `json:"total"` // 总条数，后设置
-	Items any `json:"items"` // 数据，后设置
+	Total     int    `json:"total"`                // 总条数，后设置
+	Items     any    `json:"items"`                // 数据，后设置
+	UpdatedAt int64  `json:"updated_at,omitempty"` // 聚合数据更新时间
+	Stale     bool   `json:"stale,omitempty"`      // 聚合数据是否超过刷新窗口
+	Source    string `json:"source,omitempty"`     // total 的数据来源
 }
 
 func (p *PageInfo) GetStartIdx() int {
@@ -48,13 +51,7 @@ func GetPageQuery(c *gin.Context) *PageInfo {
 		pageInfo.PageSize = pageSize
 	}
 	if pageInfo.Page < 1 {
-		// 兼容
-		page, _ := strconv.Atoi(c.Query("p"))
-		if page != 0 {
-			pageInfo.Page = page
-		} else {
-			pageInfo.Page = 1
-		}
+		pageInfo.Page = 1
 	}
 
 	if pageInfo.PageSize == 0 {
@@ -74,7 +71,9 @@ func GetPageQuery(c *gin.Context) *PageInfo {
 		}
 	}
 
-	if pageInfo.PageSize > 100 {
+	if pageInfo.PageSize < 1 {
+		pageInfo.PageSize = 1
+	} else if pageInfo.PageSize > 100 {
 		pageInfo.PageSize = 100
 	}
 

@@ -14,8 +14,6 @@ import (
 	"github.com/QuantumNous/new-api/service/relayconvert"
 	"github.com/QuantumNous/new-api/types"
 
-	"github.com/samber/lo"
-
 	"github.com/gin-gonic/gin"
 )
 
@@ -146,13 +144,15 @@ func handleLastResponse(lastStreamData string, responseId *string, createAt *int
 	*systemFingerprint = lastStreamResponse.GetSystemFingerprint()
 	*model = lastStreamResponse.Model
 
-	if service.ValidUsage(lastStreamResponse.Usage) {
-		*containStreamUsage = true
-		*usage = lastStreamResponse.Usage
+	if lastStreamResponse.Usage != nil {
+		if service.ValidUsage(lastStreamResponse.Usage) {
+			*containStreamUsage = true
+			*usage = lastStreamResponse.Usage
+		}
 		if !info.ShouldIncludeUsage {
-			*shouldSendLastResp = lo.SomeBy(lastStreamResponse.Choices, func(choice dto.ChatCompletionsStreamResponseChoice) bool {
-				return choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != ""
-			})
+			// Usage-only OpenAI tail frames have an empty choices array. Preserve
+			// combined finish/content choices and suppress only the pure usage frame.
+			*shouldSendLastResp = len(lastStreamResponse.Choices) > 0
 		}
 	}
 
@@ -162,6 +162,12 @@ func handleLastResponse(lastStreamData string, responseId *string, createAt *int
 func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStreamData string,
 	responseId string, createAt int64, model string, systemFingerprint string,
 	usage *dto.Usage, containStreamUsage bool) {
+	handleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage, true)
+}
+
+func handleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStreamData string,
+	responseId string, createAt int64, model string, systemFingerprint string,
+	usage *dto.Usage, containStreamUsage bool, processLastFrame bool) {
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
@@ -173,13 +179,16 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 		helper.Done(c)
 
 	case types.RelayFormatClaude:
+		info.ClaudeConvertInfo.Usage = usage
+		if !processLastFrame {
+			info.ClaudeConvertInfo.Done = true
+			return
+		}
 		var streamResponse dto.ChatCompletionsStreamResponse
 		if err := common.Unmarshal(common.StringToByteSlice(lastStreamData), &streamResponse); err != nil {
 			common.SysLog("error unmarshalling stream response: " + err.Error())
 			return
 		}
-
-		info.ClaudeConvertInfo.Usage = usage
 
 		result, err := relayconvert.ConvertStreamResponse(c, info, types.RelayFormatClaude, &streamResponse)
 		if err != nil {
@@ -197,6 +206,9 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 		info.ClaudeConvertInfo.Done = true
 
 	case types.RelayFormatGemini:
+		if !processLastFrame {
+			return
+		}
 		var streamResponse dto.ChatCompletionsStreamResponse
 		if err := common.Unmarshal(common.StringToByteSlice(lastStreamData), &streamResponse); err != nil {
 			common.SysLog("error unmarshalling stream response: " + err.Error())

@@ -28,7 +28,6 @@ import ChartsPanel from './ChartsPanel';
 import ApiInfoPanel from './ApiInfoPanel';
 import AnnouncementsPanel from './AnnouncementsPanel';
 import FaqPanel from './FaqPanel';
-import UptimePanel from './UptimePanel';
 import SearchModal from './modals/SearchModal';
 
 import { useDashboardData } from '../../hooks/dashboard/useDashboardData';
@@ -41,15 +40,11 @@ import {
   FLEX_CENTER_GAP2,
   ILLUSTRATION_SIZE,
   ANNOUNCEMENT_LEGEND_DATA,
-  UPTIME_STATUS_MAP,
 } from '../../constants/dashboard.constants';
 import {
   getTrendSpec,
   handleCopyUrl,
   handleSpeedTest,
-  getUptimeStatusColor,
-  getUptimeStatusText,
-  renderMonitorList,
 } from '../../helpers/dashboard';
 
 const Dashboard = () => {
@@ -102,7 +97,6 @@ const Dashboard = () => {
       }
     });
     await loadUserData();
-    await dashboardData.loadUptimeData();
   };
 
   const handleRefresh = async () => {
@@ -136,14 +130,6 @@ const Dashboard = () => {
     },
   );
   const faqData = statusState?.status?.faq || [];
-
-  const uptimeLegendData = Object.entries(UPTIME_STATUS_MAP).map(
-    ([status, info]) => ({
-      status: Number(status),
-      color: info.color,
-      label: dashboardData.t(info.label),
-    }),
-  );
 
   // ========== Effects ==========
   useEffect(() => {
@@ -221,7 +207,7 @@ const Dashboard = () => {
       {/* 系统公告和常见问答卡片 */}
       {dashboardData.hasInfoPanels && (
         <div className='mb-4'>
-          <div className='grid grid-cols-1 lg:grid-cols-4 gap-4'>
+          <div className='grid grid-cols-1 lg:grid-cols-2 gap-4'>
             {/* 公告卡片 */}
             {dashboardData.announcementsEnabled && (
               <AnnouncementsPanel
@@ -244,34 +230,6 @@ const Dashboard = () => {
                 faqData={faqData}
                 CARD_PROPS={CARD_PROPS}
                 FLEX_CENTER_GAP2={FLEX_CENTER_GAP2}
-                ILLUSTRATION_SIZE={ILLUSTRATION_SIZE}
-                t={dashboardData.t}
-              />
-            )}
-
-            {/* 服务可用性卡片 */}
-            {dashboardData.uptimeEnabled && (
-              <UptimePanel
-                uptimeData={dashboardData.uptimeData}
-                uptimeLoading={dashboardData.uptimeLoading}
-                activeUptimeTab={dashboardData.activeUptimeTab}
-                setActiveUptimeTab={dashboardData.setActiveUptimeTab}
-                loadUptimeData={dashboardData.loadUptimeData}
-                uptimeLegendData={uptimeLegendData}
-                renderMonitorList={(monitors) =>
-                  renderMonitorList(
-                    monitors,
-                    (status) => getUptimeStatusColor(status, UPTIME_STATUS_MAP),
-                    (status) =>
-                      getUptimeStatusText(
-                        status,
-                        UPTIME_STATUS_MAP,
-                        dashboardData.t,
-                      ),
-                    dashboardData.t,
-                  )
-                }
-                CARD_PROPS={CARD_PROPS}
                 ILLUSTRATION_SIZE={ILLUSTRATION_SIZE}
                 t={dashboardData.t}
               />

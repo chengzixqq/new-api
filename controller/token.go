@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -238,6 +239,10 @@ func DeleteToken(c *gin.Context) {
 	userId := c.GetInt("id")
 	err := model.DeleteTokenById(id, userId)
 	if err != nil {
+		if errors.Is(err, model.ErrModelHealthProbeTokenInUse) {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -325,6 +330,10 @@ func DeleteTokenBatch(c *gin.Context) {
 	userId := c.GetInt("id")
 	count, err := model.BatchDeleteTokens(tokenBatch.Ids, userId)
 	if err != nil {
+		if errors.Is(err, model.ErrModelHealthProbeTokenInUse) {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

@@ -21,6 +21,11 @@ import z from 'zod'
 
 import { UsageLogs } from '@/features/usage-logs'
 import {
+  normalizeUsageLogPage,
+  normalizeUsageLogPageSize,
+} from '@/features/usage-logs/lib/query-state'
+import { canonicalizeUsageLogTimeRange } from '@/features/usage-logs/lib/time-range'
+import {
   isUsageLogsSectionId,
   USAGE_LOGS_DEFAULT_SECTION,
 } from '@/features/usage-logs/section-registry'
@@ -34,8 +39,16 @@ const logTypeSearchSchema = z
   .catch([])
 
 const usageLogsSearchSchema = z.object({
-  page: z.number().optional().catch(1),
-  pageSize: z.number().optional().catch(undefined),
+  page: z
+    .preprocess(normalizeUsageLogPage, z.number().int().min(1))
+    .optional()
+    .catch(1),
+  pageSize: z
+    .preprocess(
+      normalizeUsageLogPageSize,
+      z.number().int().min(1).max(100).optional()
+    )
+    .catch(undefined),
   type: logTypeSearchSchema.optional(),
   filter: z.string().optional().catch(''),
   model: z.string().optional().catch(''),
@@ -57,15 +70,27 @@ export const Route = createFileRoute('/_authenticated/usage-logs/$section')({
         params: { section: USAGE_LOGS_DEFAULT_SECTION },
       })
     }
+    const canonicalTimeRange = canonicalizeUsageLogTimeRange(search)
+    const needsCanonicalTimeRange =
+      search.startTime !== canonicalTimeRange.startTime ||
+      search.endTime !== canonicalTimeRange.endTime
+
     // type 仅 common 使用，非 common 时清掉 URL 里的 type
     const hasTypeSearch = Array.isArray(search?.type)
       ? search.type.length > 0
       : search?.type != null && search.type !== ''
-    if (params.section !== 'common' && hasTypeSearch) {
+    if (
+      needsCanonicalTimeRange ||
+      (params.section !== 'common' && hasTypeSearch)
+    ) {
       throw redirect({
         to: '/usage-logs/$section',
         params: { section: params.section },
-        search: { ...search, type: undefined },
+        search: {
+          ...search,
+          ...canonicalTimeRange,
+          type: params.section === 'common' ? search.type : undefined,
+        },
         replace: true,
       })
     }

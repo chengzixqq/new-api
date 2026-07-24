@@ -39,8 +39,7 @@ import { formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import { LOG_TYPE_ENUM } from '../constants'
-import type { UsageLog } from '../data/schema'
-import { parseLogOther } from '../lib/format'
+import type { PreparedUsageLog } from '../lib/log-data'
 import {
   getLogTypeConfig,
   isDisplayableLogType,
@@ -188,7 +187,7 @@ function MobileLogTimeStatus({
 }
 
 /** Mobile-only Tokens block: always show cache ↓/↑ when present (no label). */
-function MobileTokensField({ log }: { log: UsageLog }) {
+function MobileTokensField({ log }: { log: PreparedUsageLog }) {
   const { t } = useTranslation()
 
   if (!isDisplayableLogType(log.type)) return null
@@ -203,7 +202,7 @@ function MobileTokensField({ log }: { log: UsageLog }) {
     )
   }
 
-  const other = parseLogOther(log.other)
+  const other = log.parsedOther
   const cacheReadTokens = other?.cache_tokens || 0
   const cacheWrite5m = other?.cache_creation_tokens_5m || 0
   const cacheWrite1h = other?.cache_creation_tokens_1h || 0
@@ -241,7 +240,7 @@ function MobileTokensField({ log }: { log: UsageLog }) {
 }
 
 /** Mobile-only User block: own layout so avatar/name always line up on the same baseline. */
-function MobileUserField({ log }: { log: UsageLog }) {
+function MobileUserField({ log }: { log: PreparedUsageLog }) {
   const { sensitiveVisible, setSelectedUserId, setUserInfoDialogOpen } =
     useUsageLogsContext()
 
@@ -278,10 +277,10 @@ function MobileUserField({ log }: { log: UsageLog }) {
 }
 
 /** Merge stream badge + TPS with first-token / duration on one row. */
-function MobileStreamTimingField({ log }: { log: UsageLog }) {
+function MobileStreamTimingField({ log }: { log: PreparedUsageLog }) {
   if (!isTimingLogType(log.type)) return null
 
-  const other = parseLogOther(log.other)
+  const other = log.parsedOther
   const useTime = log.use_time || 0
   const tokensPerSecond =
     useTime > 0 && log.completion_tokens > 0
@@ -317,7 +316,9 @@ function CommonLogsCard<TData>({
 
   const modelCell = cells.get('model_name')
   const quotaCell = cells.get('quota')
-  const rowData = cells.get('created_at')?.row.original as UsageLog | undefined
+  const rowData = cells.get('created_at')?.row.original as
+    | PreparedUsageLog
+    | undefined
 
   return (
     <div className='space-y-2.5'>

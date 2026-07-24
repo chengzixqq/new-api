@@ -17,6 +17,7 @@ type ChannelSettings struct {
 	PassThroughBodyEnabled bool   `json:"pass_through_body_enabled,omitempty"`
 	SystemPrompt           string `json:"system_prompt,omitempty"`
 	SystemPromptOverride   bool   `json:"system_prompt_override,omitempty"`
+	SSEMaxEventSizeMB      *int   `json:"sse_max_event_size_mb,omitempty"`
 }
 
 type VertexKeyType string
@@ -28,23 +29,43 @@ const (
 
 type AwsKeyType string
 
+type UpstreamHTTPMode string
+
 const (
 	AwsKeyTypeAKSK   AwsKeyType = "ak_sk" // 默认
 	AwsKeyTypeApiKey AwsKeyType = "api_key"
+
+	UpstreamHTTPModeAuto   UpstreamHTTPMode = constant.UpstreamHTTPModeAuto
+	UpstreamHTTPModeHTTP1  UpstreamHTTPMode = constant.UpstreamHTTPModeHTTP1
+	UpstreamHTTPModeHybrid UpstreamHTTPMode = constant.UpstreamHTTPModeHybrid
+
+	DefaultHTTP2ConnectionPoolSize = constant.DefaultHTTP2ConnectionPoolSize
+	MinHTTP2ConnectionPoolSize     = constant.MinHTTP2ConnectionPoolSize
+	MaxHTTP2ConnectionPoolSize     = constant.MaxHTTP2ConnectionPoolSize
+	DefaultHTTP1BodyThresholdKiB   = constant.DefaultHTTP1BodyThresholdKiB
+	MinHTTP1BodyThresholdKiB       = constant.MinHTTP1BodyThresholdKiB
+	MaxHTTP1BodyThresholdKiB       = constant.MaxHTTP1BodyThresholdKiB
+
+	MinTaskPollingConcurrency = 1
+	MaxTaskPollingConcurrency = 16
+	MinTaskPollingIntervalMs  = 0
+	MaxTaskPollingIntervalMs  = 60000
 )
 
 type ChannelOtherSettings struct {
-	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
-	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json" or "api_key"
-	OpenRouterEnterprise                  *bool                 `json:"openrouter_enterprise,omitempty"`
-	ClaudeBetaQuery                       bool                  `json:"claude_beta_query,omitempty"`          // Claude 渠道是否强制追加 ?beta=true
-	AllowServiceTier                      bool                  `json:"allow_service_tier,omitempty"`         // 是否允许 service_tier 透传（默认过滤以避免额外计费）
-	AllowInferenceGeo                     bool                  `json:"allow_inference_geo,omitempty"`        // 是否允许 inference_geo 透传（仅 Claude，默认过滤以满足数据驻留合规
-	AllowSpeed                            bool                  `json:"allow_speed,omitempty"`                // 是否允许 speed 透传（仅 Claude，默认过滤以避免意外切换推理速度模式）
-	AllowSafetyIdentifier                 bool                  `json:"allow_safety_identifier,omitempty"`    // 是否允许 safety_identifier 透传（默认过滤以保护用户隐私）
-	DisableStore                          bool                  `json:"disable_store,omitempty"`              // 是否禁用 store 透传（默认允许透传，禁用后可能导致 Codex 无法使用）
-	AllowIncludeObfuscation               bool                  `json:"allow_include_obfuscation,omitempty"`  // 是否允许 stream_options.include_obfuscation 透传（默认过滤以避免关闭流混淆保护）
-	DisableTaskPollingSleep               bool                  `json:"disable_task_polling_sleep,omitempty"` // 是否跳过异步任务轮询间隔
+	AzureResponsesVersion   string        `json:"azure_responses_version,omitempty"`
+	VertexKeyType           VertexKeyType `json:"vertex_key_type,omitempty"` // "json" or "api_key"
+	OpenRouterEnterprise    *bool         `json:"openrouter_enterprise,omitempty"`
+	ClaudeBetaQuery         bool          `json:"claude_beta_query,omitempty"`          // Claude 渠道是否强制追加 ?beta=true
+	AllowServiceTier        bool          `json:"allow_service_tier,omitempty"`         // 是否允许 service_tier 透传（默认过滤以避免额外计费）
+	AllowInferenceGeo       bool          `json:"allow_inference_geo,omitempty"`        // 是否允许 inference_geo 透传（仅 Claude，默认过滤以满足数据驻留合规
+	AllowSpeed              bool          `json:"allow_speed,omitempty"`                // 是否允许 speed 透传（仅 Claude，默认过滤以避免意外切换推理速度模式）
+	AllowSafetyIdentifier   bool          `json:"allow_safety_identifier,omitempty"`    // 是否允许 safety_identifier 透传（默认过滤以保护用户隐私）
+	DisableStore            bool          `json:"disable_store,omitempty"`              // 是否禁用 store 透传（默认允许透传，禁用后可能导致 Codex 无法使用）
+	AllowIncludeObfuscation bool          `json:"allow_include_obfuscation,omitempty"`  // 是否允许 stream_options.include_obfuscation 透传（默认过滤以避免关闭流混淆保护）
+	DisableTaskPollingSleep bool          `json:"disable_task_polling_sleep,omitempty"` // 是否跳过异步任务轮询间隔
+	TaskPollingConcurrency  *int          `json:"task_polling_concurrency,omitempty"`   // 每渠道异步任务轮询并发；nil 使用默认值
+	TaskPollingIntervalMs   *int          `json:"task_polling_interval_ms,omitempty"`   // 任务启动间隔（毫秒）；nil 兼容旧配置
 	// 是否启用 Cowork/Claude Desktop adaptive thinking 历史签名修复
 	CoworkAdaptiveThinkingFix bool `json:"cowork_adaptive_thinking_fix,omitempty"`
 	// 是否对该渠道启用上游连接预热（进程内定时预热 TCP/TLS/HTTP2 连接，降低首字节延迟）
@@ -53,6 +74,9 @@ type ChannelOtherSettings struct {
 	UpstreamTraceEnabled bool `json:"upstream_trace_enabled,omitempty"`
 	// 是否对该渠道强制使用 HTTP/1.1（禁用 HTTP/2），用于规避上游 HTTP/2 RST_STREAM 问题
 	ForceHTTP1                            bool                  `json:"force_http1,omitempty"`
+	UpstreamHTTPMode                      *UpstreamHTTPMode     `json:"upstream_http_mode,omitempty"`
+	HTTP2ConnectionPoolSize               *int                  `json:"http2_connection_pool_size,omitempty"`
+	HTTP1BodyThresholdKiB                 *int                  `json:"http1_body_threshold_kib,omitempty"`
 	AwsKeyType                            AwsKeyType            `json:"aws_key_type,omitempty"`
 	UpstreamModelUpdateCheckEnabled       bool                  `json:"upstream_model_update_check_enabled,omitempty"`        // 是否检测上游模型更新
 	UpstreamModelUpdateAutoSyncEnabled    bool                  `json:"upstream_model_update_auto_sync_enabled,omitempty"`    // 是否自动同步上游模型更新

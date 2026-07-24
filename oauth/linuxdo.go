@@ -47,7 +47,7 @@ func (p *LinuxDOProvider) ExchangeToken(ctx context.Context, code string, c *gin
 		return nil, NewOAuthError(i18n.MsgOAuthInvalidCode, nil)
 	}
 
-	logger.LogDebug(ctx, "[OAuth-LinuxDO] ExchangeToken: code=%s...", code[:min(len(code), 10)])
+	logger.LogDebug(ctx, "[OAuth-LinuxDO] ExchangeToken: authorization code received")
 
 	// Get access token using Basic auth
 	tokenEndpoint := common.GetEnvOrDefaultString("LINUX_DO_TOKEN_ENDPOINT", "https://connect.linux.do/oauth2/token")
@@ -140,8 +140,8 @@ func (p *LinuxDOProvider) GetUserInfo(ctx context.Context, token *OAuthToken) (*
 		return nil, NewOAuthError(i18n.MsgOAuthUserInfoEmpty, map[string]any{"Provider": "Linux DO"})
 	}
 
-	logger.LogDebug(ctx, "[OAuth-LinuxDO] GetUserInfo: id=%d, username=%s, name=%s, trust_level=%d, active=%v, silenced=%v",
-		linuxdoUser.Id, linuxdoUser.Username, linuxdoUser.Name, linuxdoUser.TrustLevel, linuxdoUser.Active, linuxdoUser.Silenced)
+	logger.LogDebug(ctx, "[OAuth-LinuxDO] GetUserInfo: id=%d trust_level=%d active=%v silenced=%v",
+		linuxdoUser.Id, linuxdoUser.TrustLevel, linuxdoUser.Active, linuxdoUser.Silenced)
 
 	// Check trust level
 	if linuxdoUser.TrustLevel < common.LinuxDOMinimumTrustLevel {
@@ -153,7 +153,7 @@ func (p *LinuxDOProvider) GetUserInfo(ctx context.Context, token *OAuthToken) (*
 		}
 	}
 
-	logger.LogDebug(ctx, "[OAuth-LinuxDO] GetUserInfo success: id=%d, username=%s", linuxdoUser.Id, linuxdoUser.Username)
+	logger.LogDebug(ctx, "[OAuth-LinuxDO] GetUserInfo success: id=%d", linuxdoUser.Id)
 
 	return &OAuthUser{
 		ProviderUserID: strconv.Itoa(linuxdoUser.Id),

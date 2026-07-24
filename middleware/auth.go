@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -313,6 +314,10 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 
 func TokenAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
+		healthProbeMarker := c.Request.Header.Get(common.ModelHealthProbeHeader)
+		// This marker is strictly hop-local and must never be relayed upstream,
+		// including when it is malformed or forged.
+		c.Request.Header.Del(common.ModelHealthProbeHeader)
 		// 先检测是否为ws
 		if c.Request.Header.Get("Sec-WebSocket-Protocol") != "" {
 			// Sec-WebSocket-Protocol: realtime, openai-insecure-api-key.sk-xxx, openai-beta.realtime-v1
@@ -384,6 +389,11 @@ func TokenAuth() func(c *gin.Context) {
 					common.TranslateMessage(c, i18n.MsgTokenInvalid))
 			}
 			return
+		}
+
+		if common.VerifyModelHealthProbeHeader(healthProbeMarker, c.Request.Method, c.Request.URL.EscapedPath(), time.Now()) {
+			common.SetContextKey(c, constant.ContextKeyHealthProbe, true)
+			c.Request = c.Request.WithContext(common.WithModelHealthProbeContext(c.Request.Context()))
 		}
 
 		allowIps := token.GetIpLimits()

@@ -721,11 +721,11 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 				TopN:      lo.ToPtr(2),
 			}
 		case constant.EndpointTypeOpenAIResponse:
-			// 返回 OpenAIResponsesRequest
-			return &dto.OpenAIResponsesRequest{
-				Model:  model,
-				Input:  json.RawMessage(`[{"role":"user","content":"hi"}]`),
-				Stream: lo.ToPtr(isStream),
+			request, err := service.NewTextProbeRequest(model, "hi", isStream, 16)
+			if err == nil {
+				if relayRequest, relayErr := request.RelayRequest(service.TextProbeProtocolOpenAIResponses); relayErr == nil {
+					return relayRequest
+				}
 			}
 		case constant.EndpointTypeOpenAIResponseCompact:
 			// 返回 OpenAIResponsesCompactionRequest
@@ -734,26 +734,22 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 				Input: testResponsesInput,
 			}
 		case constant.EndpointTypeAnthropic, constant.EndpointTypeGemini, constant.EndpointTypeOpenAI:
-			// 返回 GeneralOpenAIRequest
 			maxTokens := uint(16)
 			if constant.EndpointType(endpointType) == constant.EndpointTypeGemini {
 				maxTokens = 3000
 			}
-			req := &dto.GeneralOpenAIRequest{
-				Model:  model,
-				Stream: lo.ToPtr(isStream),
-				Messages: []dto.Message{
-					{
-						Role:    "user",
-						Content: "hi",
-					},
-				},
-				MaxTokens: lo.ToPtr(maxTokens),
+			protocol := service.TextProbeProtocolOpenAIChat
+			if constant.EndpointType(endpointType) == constant.EndpointTypeAnthropic {
+				protocol = service.TextProbeProtocolAnthropic
+			} else if constant.EndpointType(endpointType) == constant.EndpointTypeGemini {
+				protocol = service.TextProbeProtocolGemini
 			}
-			if isStream {
-				req.StreamOptions = &dto.StreamOptions{IncludeUsage: true}
+			request, err := service.NewTextProbeRequest(model, "hi", isStream, maxTokens)
+			if err == nil {
+				if relayRequest, relayErr := request.RelayRequest(protocol); relayErr == nil {
+					return relayRequest
+				}
 			}
-			return req
 		}
 	}
 

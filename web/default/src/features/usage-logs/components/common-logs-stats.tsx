@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Skeleton } from '@/components/ui/skeleton'
@@ -26,7 +27,8 @@ import { cn } from '@/lib/utils'
 
 import { getLogStats, getUserLogStats } from '../api'
 import { DEFAULT_LOG_STATS } from '../constants'
-import { buildApiParams } from '../lib/utils'
+import { createUsageLogStatsQueryKey } from '../lib/query-state'
+import { buildLogStatsParams } from '../lib/utils'
 import { useLogsViewScope, useUsageLogsContext } from './usage-logs-provider'
 
 const route = getRouteApi('/_authenticated/usage-logs/$section')
@@ -52,18 +54,40 @@ export function CommonLogsStats() {
   const { isAdminView: isAdmin } = useLogsViewScope()
   const searchParams = route.useSearch()
   const { sensitiveVisible } = useUsageLogsContext()
+  const statsSearchParams = useMemo(
+    () => ({
+      type: searchParams.type,
+      model: searchParams.model,
+      token: searchParams.token,
+      channel: searchParams.channel,
+      group: searchParams.group,
+      username: searchParams.username,
+      requestId: searchParams.requestId,
+      upstreamRequestId: searchParams.upstreamRequestId,
+      startTime: searchParams.startTime,
+      endTime: searchParams.endTime,
+    }),
+    [
+      searchParams.type,
+      searchParams.model,
+      searchParams.token,
+      searchParams.channel,
+      searchParams.group,
+      searchParams.username,
+      searchParams.requestId,
+      searchParams.upstreamRequestId,
+      searchParams.startTime,
+      searchParams.endTime,
+    ]
+  )
+  const params = useMemo(
+    () => buildLogStatsParams(statsSearchParams, isAdmin),
+    [isAdmin, statsSearchParams]
+  )
 
   const { data: stats, isLoading } = useQuery({
-    queryKey: ['usage-logs-stats', isAdmin, searchParams],
+    queryKey: createUsageLogStatsQueryKey(isAdmin, params),
     queryFn: async () => {
-      const params = buildApiParams({
-        page: 1,
-        pageSize: 1,
-        searchParams,
-        columnFilters: [],
-        isAdmin,
-      })
-
       const result = isAdmin
         ? await getLogStats(params)
         : await getUserLogStats(params)
@@ -72,7 +96,9 @@ export function CommonLogsStats() {
         ? result.data || DEFAULT_LOG_STATS
         : DEFAULT_LOG_STATS
     },
-    placeholderData: (previousData) => previousData,
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey[1] === isAdmin ? previousData : undefined,
+    staleTime: 5_000,
   })
 
   if (isLoading) {

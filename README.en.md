@@ -311,7 +311,8 @@ docker run --name new-api -d --restart always \
 | `SQL_DSN` | Database connection string | - |
 | `REDIS_CONN_STRING` | Redis connection string | - |
 | `STREAMING_TIMEOUT` | Streaming timeout (seconds) | `300` |
-| `STREAM_SCANNER_MAX_BUFFER_MB` | Max per-line buffer (MB) for the stream scanner; increase when upstream sends huge image/base64 payloads | `64` |
+| `STREAMING_MAX_BUFFER_SIZE` | Maximum upstream SSE event size in bytes; must be a whole MiB from 1 to 128 MiB | `16777216` |
+| `STREAM_SCANNER_MAX_BUFFER_MB` | Legacy compatibility setting for the maximum upstream SSE event size in MiB (1–128) | unset |
 | `MAX_REQUEST_BODY_MB` | Max request body size (MB, counted **after decompression**; prevents huge requests/zip bombs from exhausting memory). Exceeding it returns `413` | `32` |
 | `AZURE_DEFAULT_API_VERSION` | Azure API version | `2025-04-01-preview` |
 | `ERROR_LOG_ENABLED` | Error log switch | `false` |

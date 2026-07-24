@@ -72,6 +72,7 @@ type BaiduAccessToken struct {
 	ErrorDescription string    `json:"error_description,omitempty"`
 	ExpiresIn        int64     `json:"expires_in,omitempty"`
 	ExpiresAt        time.Time `json:"-"`
+	RefreshAt        time.Time `json:"-"`
 }
 
 type BaiduTokenResponse struct {

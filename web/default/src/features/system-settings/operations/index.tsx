@@ -47,6 +47,10 @@ const defaultOperationsSettings: OperationsSettings = {
   UpstreamWarmupEnabled: true,
   UpstreamTraceEnabled: false,
   UpstreamTraceSampleRate: 1,
+  'global.sse_max_event_size_mb': 'null',
+  'global.upstream_http_mode': 'null',
+  'global.http2_connection_pool_size': 'null',
+  'global.http1_body_threshold_kib': 'null',
   'performance_setting.disk_cache_enabled': false,
   'performance_setting.disk_cache_threshold_mb': 10,
   'performance_setting.disk_cache_max_size_mb': 1024,
@@ -55,10 +59,6 @@ const defaultOperationsSettings: OperationsSettings = {
   'performance_setting.monitor_cpu_threshold': 90,
   'performance_setting.monitor_memory_threshold': 90,
   'performance_setting.monitor_disk_threshold': 95,
-  'perf_metrics_setting.enabled': true,
-  'perf_metrics_setting.flush_interval': 5,
-  'perf_metrics_setting.bucket_time': 'hour',
-  'perf_metrics_setting.retention_days': 0,
 }
 
 export function OperationsSettings() {

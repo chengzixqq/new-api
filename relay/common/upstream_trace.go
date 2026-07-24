@@ -66,6 +66,45 @@ type UpstreamTraceInfo struct {
 
 	BodySize   int64  `json:"body_size,omitempty"`
 	TraceError string `json:"trace_error,omitempty"`
+
+	TransportMode              string `json:"transport_mode,omitempty"`
+	HTTPProtocol               string `json:"http_protocol,omitempty"`
+	H2PoolSize                 int    `json:"h2_pool_size,omitempty"`
+	H2Shard                    int    `json:"h2_shard,omitempty"`
+	H2ShardActiveAtPick        *int64 `json:"h2_shard_active_at_pick,omitempty"`
+	H2PendingUploadBytesAtPick *int64 `json:"h2_pending_upload_bytes_at_pick,omitempty"`
+}
+
+// SetTransportSelection records the client-side transport decision selected
+// before dispatch. shard is one-based for admin-facing logs; zero means the
+// shared client or a non-sharded HTTP/1 transport.
+func (t *UpstreamTraceInfo) SetTransportSelection(mode string, poolSize, shard int, activeAtPick, pendingUploadBytesAtPick int64) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.TransportMode = mode
+	t.H2PoolSize = poolSize
+	t.H2Shard = shard
+	t.H2ShardActiveAtPick = nil
+	t.H2PendingUploadBytesAtPick = nil
+	if shard > 0 {
+		t.H2ShardActiveAtPick = &activeAtPick
+		t.H2PendingUploadBytesAtPick = &pendingUploadBytesAtPick
+	}
+	t.mu.Unlock()
+}
+
+// SetHTTPProtocol records the protocol negotiated with the upstream after
+// response headers arrive. It is intentionally separate from the requested
+// transport mode because an HTTP/2-preferred transport may negotiate HTTP/1.1.
+func (t *UpstreamTraceInfo) SetHTTPProtocol(protocol string) {
+	if t == nil || protocol == "" {
+		return
+	}
+	t.mu.Lock()
+	t.HTTPProtocol = protocol
+	t.mu.Unlock()
 }
 
 // AttachUpstreamTrace attaches an httptrace.ClientTrace to req when upstream
@@ -79,6 +118,9 @@ func AttachUpstreamTrace(req *http.Request, info *RelayInfo) *http.Request {
 	if req == nil || info == nil {
 		return req
 	}
+	// RelayInfo can be reused across channel retries. Never let a previous
+	// attempt's segmented trace receive the current transport selection.
+	info.UpstreamTrace = nil
 	// Trace when the global switch is on, OR when this specific channel opted in
 	// (semantics B: a channel can enable tracing even if the global flag is off).
 	enabled := common.UpstreamTraceEnabled.Load()

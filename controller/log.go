@@ -3,12 +3,42 @@ package controller
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
+
+func currentLogQueryOptions(c *gin.Context) model.LogQueryOptions {
+	config := service.GetLogRollupConfig()
+	staleAfter := 3 * config.RefreshInterval
+	if staleAfter < 15*time.Second {
+		staleAfter = 15 * time.Second
+	}
+	return model.LogQueryOptions{
+		Context:    c.Request.Context(),
+		UseRollup:  config.Enabled && config.ReadEnabled && model.LogRollupsSupported(),
+		Now:        time.Now(),
+		StaleAfter: staleAfter,
+	}
+}
+
+func logStatResponseData(stat model.Stat) gin.H {
+	data := gin.H{
+		"quota": stat.Quota,
+		"rpm":   stat.Rpm,
+		"tpm":   stat.Tpm,
+	}
+	if stat.Source != "" {
+		data["updated_at"] = stat.UpdatedAt
+		data["stale"] = stat.Stale
+		data["source"] = stat.Source
+	}
+	return data
+}
 
 func GetAllLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
@@ -22,13 +52,16 @@ func GetAllLogs(c *gin.Context) {
 	group := c.Query("group")
 	requestId := c.Query("request_id")
 	upstreamRequestId := c.Query("upstream_request_id")
-	logs, total, err := model.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group, requestId, upstreamRequestId)
+	logs, total, meta, err := model.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group, requestId, upstreamRequestId, currentLogQueryOptions(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(logs)
+	pageInfo.UpdatedAt = meta.UpdatedAt
+	pageInfo.Stale = meta.Stale
+	pageInfo.Source = meta.Source
 	common.ApiSuccess(c, pageInfo)
 	return
 }
@@ -104,7 +137,7 @@ func GetLogsStat(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	stat, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
+	stat, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, currentLogQueryOptions(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -113,11 +146,7 @@ func GetLogsStat(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data": gin.H{
-			"quota": stat.Quota,
-			"rpm":   stat.Rpm,
-			"tpm":   stat.Tpm,
-		},
+		"data":    logStatResponseData(stat),
 	})
 	return
 }
@@ -131,7 +160,7 @@ func GetLogsSelfStat(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
+	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, currentLogQueryOptions(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -140,12 +169,7 @@ func GetLogsSelfStat(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"success": true,
 		"message": "",
-		"data": gin.H{
-			"quota": quotaNum.Quota,
-			"rpm":   quotaNum.Rpm,
-			"tpm":   quotaNum.Tpm,
-			//"token": tokenNum,
-		},
+		"data":    logStatResponseData(quotaNum),
 	})
 	return
 }

@@ -19,6 +19,9 @@ func getHeaderNavAccess(module string) headerNavAccess {
 		Enabled:     true,
 		RequireAuth: false,
 	}
+	if module == "health" {
+		fallback.Enabled = false
+	}
 
 	common.OptionMapRWMutex.RLock()
 	raw := common.OptionMap["HeaderNavModules"]

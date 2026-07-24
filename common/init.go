@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -73,9 +74,11 @@ func InitEnv() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if _, err := os.Stat(*LogDir); os.IsNotExist(err) {
-			err = os.Mkdir(*LogDir, 0777)
-			if err != nil {
+		if err := os.MkdirAll(*LogDir, 0700); err != nil {
+			log.Fatal(err)
+		}
+		if runtime.GOOS != "windows" {
+			if err := os.Chmod(*LogDir, 0700); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -89,12 +92,6 @@ func InitEnv() {
 	UpstreamWarmupEnabled.Store(GetEnvOrDefaultBool("UPSTREAM_WARMUP_ENABLED", true))
 	UpstreamTraceEnabled.Store(GetEnvOrDefaultBool("UPSTREAM_TRACE_ENABLED", false))
 	SetUpstreamTraceSampleRate(GetEnvOrDefaultFloat("UPSTREAM_TRACE_SAMPLE_RATE", 1.0))
-	PoolStatusEnabled.Store(GetEnvOrDefaultBool("POOL_STATUS_ENABLED", false))
-	PoolStatusUpstreamURL = GetEnvOrDefaultString("POOL_STATUS_UPSTREAM_URL", PoolStatusUpstreamURL)
-	PoolStatusAuthHeader = GetEnvOrDefaultString("POOL_STATUS_AUTH_HEADER", PoolStatusAuthHeader)
-	PoolStatusUserID = GetEnvOrDefaultString("POOL_STATUS_USER_ID", PoolStatusUserID)
-	PoolStatusIntervalSeconds = GetEnvOrDefault("POOL_STATUS_INTERVAL_SECONDS", PoolStatusIntervalSeconds)
-	PoolStatusCategoryName = GetEnvOrDefaultString("POOL_STATUS_CATEGORY_NAME", PoolStatusCategoryName)
 	TLSInsecureSkipVerify = GetEnvOrDefaultBool("TLS_INSECURE_SKIP_VERIFY", false)
 	if TLSInsecureSkipVerify {
 		if tr, ok := http.DefaultTransport.(*http.Transport); ok && tr != nil {
@@ -116,6 +113,13 @@ func InitEnv() {
 	SyncFrequency = GetEnvOrDefault("SYNC_FREQUENCY", 60)
 	BatchUpdateInterval = GetEnvOrDefault("BATCH_UPDATE_INTERVAL", 5)
 	RelayTimeout = GetEnvOrDefault("RELAY_TIMEOUT", 0)
+	responseHeaderTimeoutDefault := 300
+	if RelayTimeout > 0 {
+		responseHeaderTimeoutDefault = RelayTimeout
+	}
+	RelayDialTimeout = getPositiveEnvOrDefault("RELAY_DIAL_TIMEOUT", 30)
+	RelayTLSHandshakeTimeout = getPositiveEnvOrDefault("RELAY_TLS_HANDSHAKE_TIMEOUT", 10)
+	RelayResponseHeaderTimeout = getPositiveEnvOrDefault("RELAY_RESPONSE_HEADER_TIMEOUT", responseHeaderTimeoutDefault)
 	RelayIdleConnTimeout = GetEnvOrDefault("RELAY_IDLE_CONN_TIMEOUT", 90)
 	RelayMaxIdleConns = GetEnvOrDefault("RELAY_MAX_IDLE_CONNS", 500)
 	RelayMaxIdleConnsPerHost = GetEnvOrDefault("RELAY_MAX_IDLE_CONNS_PER_HOST", 100)
@@ -147,7 +151,46 @@ func initConstantEnv() {
 	constant.StreamingTimeout = GetEnvOrDefault("STREAMING_TIMEOUT", 300)
 	constant.DifyDebug = GetEnvOrDefaultBool("DIFY_DEBUG", true)
 	constant.MaxFileDownloadMB = GetEnvOrDefault("MAX_FILE_DOWNLOAD_MB", 64)
-	constant.StreamScannerMaxBufferMB = GetEnvOrDefault("STREAM_SCANNER_MAX_BUFFER_MB", 128)
+	var err error
+	constant.RelayUpstreamHTTPMode, err = getOptionalUpstreamHTTPModeEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	constant.RelayHTTP2ConnectionPoolSize, err = getOptionalEnvIntInRange(
+		"RELAY_HTTP2_CONNECTION_POOL_SIZE",
+		constant.MinHTTP2ConnectionPoolSize,
+		constant.MaxHTTP2ConnectionPoolSize,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	constant.RelayHTTP1BodyThresholdKiB, err = getOptionalEnvIntInRange(
+		"RELAY_HTTP1_BODY_THRESHOLD_KIB",
+		constant.MinHTTP1BodyThresholdKiB,
+		constant.MaxHTTP1BodyThresholdKiB,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	constant.StreamingMaxBufferSize, err = getOptionalEnvIntInRange(
+		"STREAMING_MAX_BUFFER_SIZE",
+		constant.MinSSEMaxEventSizeMB<<20,
+		constant.MaxSSEMaxEventSizeMB<<20,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if constant.StreamingMaxBufferSize%(1<<20) != 0 {
+		log.Fatal("STREAMING_MAX_BUFFER_SIZE must be a whole number of MiB")
+	}
+	constant.StreamScannerMaxBufferMB, err = getOptionalEnvIntInRange(
+		"STREAM_SCANNER_MAX_BUFFER_MB",
+		constant.MinSSEMaxEventSizeMB,
+		constant.MaxSSEMaxEventSizeMB,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 	// MaxRequestBodyMB 请求体最大大小（解压后），用于防止超大请求/zip bomb导致内存暴涨
 	constant.MaxRequestBodyMB = GetEnvOrDefault("MAX_REQUEST_BODY_MB", 128)
 	constant.AnonymousRequestBodyLimitKB = GetEnvOrDefault("ANONYMOUS_REQUEST_BODY_LIMIT_KB", 512)
@@ -194,4 +237,42 @@ func initConstantEnv() {
 		}
 	}
 	constant.TrustedRedirectDomains = trustedDomains
+}
+
+func getPositiveEnvOrDefault(name string, defaultValue int) int {
+	rawValue, exists := os.LookupEnv(name)
+	if !exists || strings.TrimSpace(rawValue) == "" {
+		return defaultValue
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(rawValue))
+	if err != nil || value <= 0 {
+		log.Fatalf("%s must be a positive integer, got %q", name, rawValue)
+	}
+	return value
+}
+
+func getOptionalEnvIntInRange(name string, minimum int, maximum int) (int, error) {
+	rawValue, exists := os.LookupEnv(name)
+	if !exists || strings.TrimSpace(rawValue) == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(rawValue))
+	if err != nil || value < minimum || value > maximum {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d, got %q", name, minimum, maximum, rawValue)
+	}
+	return value, nil
+}
+
+func getOptionalUpstreamHTTPModeEnv() (string, error) {
+	rawValue, exists := os.LookupEnv("RELAY_UPSTREAM_HTTP_MODE")
+	if !exists || strings.TrimSpace(rawValue) == "" {
+		return "", nil
+	}
+	value := strings.ToLower(strings.TrimSpace(rawValue))
+	switch value {
+	case constant.UpstreamHTTPModeAuto, constant.UpstreamHTTPModeHTTP1, constant.UpstreamHTTPModeHybrid:
+		return value, nil
+	default:
+		return "", fmt.Errorf("RELAY_UPSTREAM_HTTP_MODE must be one of auto, http1, hybrid, got %q", rawValue)
+	}
 }

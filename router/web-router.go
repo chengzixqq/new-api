@@ -30,10 +30,20 @@ func SetWebRouter(router *gin.Engine, assets ThemeAssets) {
 	router.Use(middleware.GlobalWebRateLimit())
 	router.Use(middleware.Cache())
 	router.Use(static.Serve("/", themeFS))
-	router.NoRoute(func(c *gin.Context) {
+	router.NoRoute(frontendNoRouteHandler(assets))
+}
+
+func frontendNoRouteHandler(assets ThemeAssets) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		c.Set(middleware.RouteTagKey, "web")
-		if strings.HasPrefix(c.Request.RequestURI, "/v1") || strings.HasPrefix(c.Request.RequestURI, "/api") || strings.HasPrefix(c.Request.RequestURI, "/assets") {
+		requestPath := c.Request.URL.Path
+		if strings.HasPrefix(requestPath, "/v1") || strings.HasPrefix(requestPath, "/api") || strings.HasPrefix(requestPath, "/assets") {
 			controller.RelayNotFound(c)
+			return
+		}
+		if strings.HasPrefix(requestPath, "/static/") {
+			c.Header("Cache-Control", "no-store")
+			c.Status(http.StatusNotFound)
 			return
 		}
 		c.Header("Cache-Control", "no-cache")
@@ -42,5 +52,5 @@ func SetWebRouter(router *gin.Engine, assets ThemeAssets) {
 		} else {
 			c.Data(http.StatusOK, "text/html; charset=utf-8", assets.DefaultIndexPage)
 		}
-	})
+	}
 }

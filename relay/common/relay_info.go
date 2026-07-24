@@ -1,11 +1,13 @@
 package common
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -85,17 +87,32 @@ type TokenCountMeta struct {
 	estimatePromptTokens int
 }
 
+// ChannelAttempt is a request-scoped snapshot of one actual upstream dispatch.
+// It contains only dimensions and timing needed by internal performance
+// aggregation; upstream credentials and endpoints are deliberately excluded.
+type ChannelAttempt struct {
+	ChannelID       int
+	ModelName       string
+	Group           string
+	StartedAt       time.Time
+	FirstResponseAt time.Time
+	CompletedAt     time.Time
+	IsStream        bool
+	IsHealthProbe   bool
+}
+
 type RelayInfo struct {
-	TokenId           int
-	TokenKey          string
-	TokenGroup        string
-	UserId            int
-	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
-	UserGroup         string // 用户所在分组
-	TokenUnlimited    bool
-	StartTime         time.Time
-	FirstResponseTime time.Time
-	isFirstResponse   bool
+	TokenId                 int
+	TokenKey                string
+	TokenGroup              string
+	UserId                  int
+	UsingGroup              string // 使用的分组，当auto跨分组重试时，会变动
+	UserGroup               string // 用户所在分组
+	UserGroupRatioOverrides map[string]float64
+	TokenUnlimited          bool
+	StartTime               time.Time
+	FirstResponseTime       time.Time
+	isFirstResponse         bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
 	IsGeminiBatchEmbedding bool
@@ -148,11 +165,15 @@ type RelayInfo struct {
 	SubscriptionAmountUsedAfterPreConsume int64
 	IsClaudeBetaQuery                     bool // /v1/messages?beta=true
 	IsChannelTest                         bool // channel test request
+	IsHealthProbe                         bool // trusted local model-health probe
 	RetryIndex                            int
 	LastError                             *types.NewAPIError
 	RuntimeHeadersOverride                map[string]interface{}
 	UseRuntimeHeadersOverride             bool
 	ParamOverrideAudit                    []string
+	channelAttemptMu                      sync.Mutex
+	channelAttempt                        ChannelAttempt
+	channelAttemptPending                 bool
 
 	// UpstreamRequestBodySize is the byte size of the marshaled upstream request
 	// body. It is set when the body is wrapped in a BodyStorage (see
@@ -167,6 +188,9 @@ type RelayInfo struct {
 	UpstreamTrace *UpstreamTraceInfo
 
 	PriceData types.PriceData
+	// PricingTokenMeta is retained for auto-group repricing after the final
+	// target group is selected. It is request-scoped and never persisted.
+	PricingTokenMeta *types.TokenCountMeta
 
 	// QuotaClamp is set (non-nil) when a quota conversion saturated at the
 	// int32 bound (or NaN fallback) while computing this request's charge.
@@ -179,6 +203,9 @@ type RelayInfo struct {
 	BillingRequestInput   *billingexpr.RequestInput
 
 	Request dto.Request
+	// RequestContext is the downstream request lifetime used by preparatory
+	// provider calls that happen before an outbound *http.Request is built.
+	RequestContext context.Context
 
 	// RequestConversionChain records request format conversions in order, e.g.
 	// ["openai", "openai_responses"] or ["openai", "claude"].
@@ -188,6 +215,10 @@ type RelayInfo struct {
 	FinalRequestRelayFormat types.RelayFormat
 
 	StreamStatus *StreamStatus
+	// streamOutputStarted records that an SSE data handler actually wrote bytes
+	// to the downstream response. StreamScannerHandler owns this flag and waits
+	// for its writer goroutine before callers inspect it.
+	streamOutputStarted bool
 
 	ThinkingContentInfo
 	TokenCountMeta
@@ -471,15 +502,22 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 	if reqId == "" {
 		reqId = common.NewRequestId()
 	}
+	userGroupRatioOverrides, _ := common.GetContextKeyType[map[string]float64](c, constant.ContextKeyUserGroupRatioOverrides)
+	requestContext := context.Background()
+	if c.Request != nil {
+		requestContext = c.Request.Context()
+	}
 	info := &RelayInfo{
-		Request: request,
+		Request:        request,
+		RequestContext: requestContext,
 
-		RequestId:  reqId,
-		UserId:     common.GetContextKeyInt(c, constant.ContextKeyUserId),
-		UsingGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
-		UserGroup:  common.GetContextKeyString(c, constant.ContextKeyUserGroup),
-		UserQuota:  common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
-		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		RequestId:               reqId,
+		UserId:                  common.GetContextKeyInt(c, constant.ContextKeyUserId),
+		UsingGroup:              common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
+		UserGroup:               common.GetContextKeyString(c, constant.ContextKeyUserGroup),
+		UserGroupRatioOverrides: userGroupRatioOverrides,
+		UserQuota:               common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
+		UserEmail:               common.GetContextKeyString(c, constant.ContextKeyUserEmail),
 
 		OriginModelName: common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
 
@@ -493,6 +531,7 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		RequestURLPath:  c.Request.URL.String(),
 		RequestHeaders:  cloneRequestHeaders(c),
 		IsStream:        isStream,
+		IsHealthProbe:   common.GetContextKeyBool(c, constant.ContextKeyHealthProbe),
 
 		StartTime:         startTime,
 		FirstResponseTime: startTime.Add(-time.Second),
@@ -667,8 +706,13 @@ func (info *RelayInfo) GetEstimatePromptTokens() int {
 }
 
 func (info *RelayInfo) SetFirstResponseTime() {
+	now := time.Now()
+	info.channelAttemptMu.Lock()
+	if info.channelAttemptPending && info.channelAttempt.FirstResponseAt.IsZero() {
+		info.channelAttempt.FirstResponseAt = now
+	}
+	info.channelAttemptMu.Unlock()
 	if info.isFirstResponse {
-		now := time.Now()
 		info.FirstResponseTime = now
 		info.isFirstResponse = false
 		// When upstream tracing is on, the first valid SSE data line is the
@@ -678,6 +722,44 @@ func (info *RelayInfo) SetFirstResponseTime() {
 			info.UpstreamTrace.FirstSSEMs = now.Sub(info.UpstreamTrace.StartAt).Milliseconds()
 		}
 	}
+}
+
+// MarkChannelAttemptDispatched starts a channel-attempt snapshot immediately
+// before the outbound network call. Preparatory errors before this point are
+// therefore not counted as channel failures.
+func (info *RelayInfo) MarkChannelAttemptDispatched() {
+	if info == nil || info.ChannelMeta == nil {
+		return
+	}
+	info.channelAttemptMu.Lock()
+	info.channelAttempt = ChannelAttempt{
+		ChannelID:     info.ChannelId,
+		ModelName:     info.OriginModelName,
+		Group:         info.UsingGroup,
+		StartedAt:     time.Now(),
+		IsStream:      info.IsStream,
+		IsHealthProbe: info.IsHealthProbe,
+	}
+	info.channelAttemptPending = true
+	info.channelAttemptMu.Unlock()
+}
+
+// TakeChannelAttempt consumes the current dispatch exactly once. The relay
+// controller uses it for failed retry attempts; successful attempts are
+// consumed by the existing final performance-recording path.
+func (info *RelayInfo) TakeChannelAttempt() (ChannelAttempt, bool) {
+	if info == nil {
+		return ChannelAttempt{}, false
+	}
+	info.channelAttemptMu.Lock()
+	defer info.channelAttemptMu.Unlock()
+	if !info.channelAttemptPending || info.channelAttempt.ChannelID <= 0 || info.channelAttempt.StartedAt.IsZero() {
+		return ChannelAttempt{}, false
+	}
+	attempt := info.channelAttempt
+	attempt.CompletedAt = time.Now()
+	info.channelAttemptPending = false
+	return attempt, true
 }
 
 // SetFirstFlushTime records the moment NewAPI first hands an upstream chunk to
@@ -699,6 +781,36 @@ func (info *RelayInfo) SetFirstFlushTime() {
 	if !info.UpstreamTrace.FirstSSEAt.IsZero() {
 		info.UpstreamTrace.FlushDelayMs = now.Sub(info.UpstreamTrace.FirstSSEAt).Milliseconds()
 	}
+}
+
+func (info *RelayInfo) ResetStreamOutputStarted() {
+	if info == nil {
+		return
+	}
+	info.streamOutputStarted = false
+}
+
+func (info *RelayInfo) MarkStreamOutputStarted() {
+	if info == nil {
+		return
+	}
+	info.streamOutputStarted = true
+}
+
+func (info *RelayInfo) StreamOutputStarted() bool {
+	return info != nil && info.streamOutputStarted
+}
+
+func (info *RelayInfo) SSELimitExceededBeforeOutput() bool {
+	return info != nil && info.StreamStatus != nil &&
+		info.StreamStatus.SSELimitExceeded &&
+		!info.streamOutputStarted
+}
+
+func (info *RelayInfo) SSELimitExceededAfterOutput() bool {
+	return info != nil && info.StreamStatus != nil &&
+		info.StreamStatus.SSELimitExceeded &&
+		info.streamOutputStarted
 }
 
 func (info *RelayInfo) HasSendResponse() bool {

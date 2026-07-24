@@ -23,7 +23,7 @@ import { API, showError, showSuccess, toBoolean } from '../../helpers';
 import SettingsAPIInfo from '../../pages/Setting/Dashboard/SettingsAPIInfo';
 import SettingsAnnouncements from '../../pages/Setting/Dashboard/SettingsAnnouncements';
 import SettingsFAQ from '../../pages/Setting/Dashboard/SettingsFAQ';
-import SettingsUptimeKuma from '../../pages/Setting/Dashboard/SettingsUptimeKuma';
+import SettingsModelHealth from '../../pages/Setting/Dashboard/SettingsModelHealth';
 import SettingsDataDashboard from '../../pages/Setting/Dashboard/SettingsDataDashboard';
 
 const DashboardSetting = () => {
@@ -31,18 +31,29 @@ const DashboardSetting = () => {
     'console_setting.api_info': '',
     'console_setting.announcements': '',
     'console_setting.faq': '',
-    'console_setting.uptime_kuma_groups': '',
     'console_setting.api_info_enabled': '',
     'console_setting.announcements_enabled': '',
     'console_setting.faq_enabled': '',
-    'console_setting.uptime_kuma_enabled': '',
+    'model_health_setting.enabled': false,
+    'model_health_setting.default_interval_seconds': 300,
+    'model_health_setting.default_timeout_seconds': 45,
+    'model_health_setting.concurrency': 4,
+    'model_health_setting.retention_days': 30,
+    'model_health_setting.healthy_threshold': 99,
+    'model_health_setting.fluctuating_threshold': 95,
+    'model_health_setting.passive_min_samples': 30,
+    'model_health_setting.active_min_samples': 3,
+    'model_health_setting.public_models': '[]',
+    'model_health_setting.public_groups': '[]',
+    'perf_metrics_setting.enabled': true,
+    'perf_metrics_setting.flush_interval': 5,
+    'perf_metrics_setting.bucket_time': '5min',
+    'perf_metrics_setting.retention_days': 30,
 
     // 用于迁移检测的旧键，下个版本会删除
     ApiInfo: '',
     Announcements: '',
     FAQ: '',
-    UptimeKumaUrl: '',
-    UptimeKumaSlug: '',
 
     /* 数据看板 */
     DataExportEnabled: false,
@@ -90,13 +101,7 @@ const DashboardSetting = () => {
 
   // 用于迁移检测的旧键，下个版本会删除
   const hasLegacyData = useMemo(() => {
-    const legacyKeys = [
-      'ApiInfo',
-      'Announcements',
-      'FAQ',
-      'UptimeKumaUrl',
-      'UptimeKumaSlug',
-    ];
+    const legacyKeys = ['ApiInfo', 'Announcements', 'FAQ'];
     return legacyKeys.some((k) => inputs[k]);
   }, [inputs]);
 
@@ -161,10 +166,10 @@ const DashboardSetting = () => {
           <SettingsFAQ options={inputs} refresh={onRefresh} />
         </Card>
 
-        {/* Uptime Kuma 监控设置 */}
-        <Card style={{ marginTop: '10px' }}>
-          <SettingsUptimeKuma options={inputs} refresh={onRefresh} />
-        </Card>
+        {/* 模型健康统一设置 */}
+        <div style={{ marginTop: '10px' }}>
+          <SettingsModelHealth options={inputs} refresh={onRefresh} />
+        </div>
       </Spin>
     </>
   );

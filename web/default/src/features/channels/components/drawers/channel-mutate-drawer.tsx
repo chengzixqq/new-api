@@ -131,6 +131,7 @@ import {
   getAllModels,
   getChannel,
   getChannelKey,
+  getChannelUpstreamHTTPConfig,
   getGroups,
   getPrefillGroups,
   refreshCodexCredential,
@@ -188,6 +189,7 @@ import {
   ChannelBasicSection,
   ChannelEditorLoadingState,
   ChannelModelsSection,
+  ChannelUpstreamHTTPSection,
 } from './sections'
 
 type ChannelMutateDrawerProps = {
@@ -294,10 +296,16 @@ const SENSITIVE_FORM_FIELDS = [
   'allow_speed',
   'claude_beta_query',
   'disable_task_polling_sleep',
+  'task_polling_concurrency',
+  'task_polling_interval_ms',
+  'sse_max_event_size_mb',
   'cowork_adaptive_thinking_fix',
   'upstream_warmup_enabled',
   'upstream_trace_enabled',
   'force_http1',
+  'upstream_http_mode',
+  'http2_connection_pool_size',
+  'http1_body_threshold_kib',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',
@@ -346,8 +354,13 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.cowork_adaptive_thinking_fix ||
     values.upstream_warmup_enabled ||
     values.upstream_trace_enabled ||
-    values.force_http1 ||
+    values.upstream_http_mode !== undefined ||
+    values.http2_connection_pool_size !== undefined ||
+    values.http1_body_threshold_kib !== undefined ||
     values.disable_task_polling_sleep ||
+    values.task_polling_concurrency !== undefined ||
+    values.task_polling_interval_ms !== undefined ||
+    values.sse_max_event_size_mb !== undefined ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
     values.upstream_model_update_ignored_models?.trim()
@@ -685,6 +698,52 @@ export function ChannelMutateDrawer({
     queryFn: () => getPrefillGroups('model'),
   })
 
+  const performanceConfigQuery = useQuery({
+    queryKey: [...channelsQueryKeys.all, 'upstream-http-config'],
+    queryFn: getChannelUpstreamHTTPConfig,
+    enabled: open,
+    staleTime: 0,
+  })
+  const globalSseMaxEventSizeMb = useMemo(() => {
+    const rawValue = performanceConfigQuery.data?.data?.sse_max_event_size_mb
+    const parsedValue = Number(rawValue)
+    if (
+      Number.isInteger(parsedValue) &&
+      parsedValue >= 1 &&
+      parsedValue <= 128
+    ) {
+      return parsedValue
+    }
+    return 16
+  }, [performanceConfigQuery.data])
+  const globalUpstreamHTTPConfig = useMemo(() => {
+    const config = performanceConfigQuery.data?.data
+    const mode = config?.upstream_http_mode
+    const poolSize = Number(config?.http2_connection_pool_size)
+    const thresholdKiB = Number(config?.http1_body_threshold_kib)
+
+    return {
+      upstream_http_mode:
+        mode === 'http1' || mode === 'hybrid' || mode === 'auto'
+          ? mode
+          : ('auto' as const),
+      http2_connection_pool_size:
+        Number.isInteger(poolSize) && poolSize >= 1 && poolSize <= 64
+          ? poolSize
+          : 1,
+      http1_body_threshold_kib:
+        Number.isInteger(thresholdKiB) &&
+        thresholdKiB >= 64 &&
+        thresholdKiB <= 65536
+          ? thresholdKiB
+          : 256,
+      upstream_http_mode_source: config?.upstream_http_mode_source,
+      http2_connection_pool_size_source:
+        config?.http2_connection_pool_size_source,
+      http1_body_threshold_kib_source: config?.http1_body_threshold_kib_source,
+    }
+  }, [performanceConfigQuery.data])
+
   const { copyToClipboard } = useCopyToClipboard()
 
   const {
@@ -752,6 +811,7 @@ export function ChannelMutateDrawer({
   const currentDisableTaskPollingSleep = form.watch(
     'disable_task_polling_sleep'
   )
+  const currentSseMaxEventSizeMb = form.watch('sse_max_event_size_mb')
   const currentProxy = form.watch('proxy')
   const currentSystemPrompt = form.watch('system_prompt')
   const currentSystemPromptOverride = form.watch('system_prompt_override')
@@ -1017,6 +1077,7 @@ export function ChannelMutateDrawer({
     currentThinkingToContent ||
     currentPassThroughBodyEnabled ||
     currentDisableTaskPollingSleep ||
+    currentSseMaxEventSizeMb !== undefined ||
     currentProxy?.trim() ||
     currentSystemPrompt?.trim() ||
     currentSystemPromptOverride
@@ -4143,25 +4204,141 @@ export function ChannelMutateDrawer({
 
                               <FormField
                                 control={form.control}
-                                name='disable_task_polling_sleep'
+                                name='task_polling_concurrency'
                                 render={({ field }) => (
-                                  <FormItem className='flex items-center justify-between px-4 py-3'>
-                                    <div className='space-y-0.5'>
-                                      <FormLabel>
-                                        {t('Skip async task polling delay')}
-                                      </FormLabel>
-                                      <FormDescription>
-                                        {t(
-                                          'Do not wait one second between polling async tasks for this channel'
-                                        )}
-                                      </FormDescription>
-                                    </div>
+                                  <FormItem className='px-4 py-3'>
+                                    <FormLabel>
+                                      {t('Task polling concurrency')}
+                                    </FormLabel>
                                     <FormControl>
-                                      <Switch
-                                        checked={field.value}
-                                        onCheckedChange={field.onChange}
+                                      <Input
+                                        type='number'
+                                        min={1}
+                                        max={16}
+                                        step={1}
+                                        placeholder='4'
+                                        value={field.value ?? ''}
+                                        onChange={(event) => {
+                                          if (event.target.value === '') {
+                                            field.onChange(undefined)
+                                            return
+                                          }
+                                          field.onChange(
+                                            event.target.valueAsNumber
+                                          )
+                                        }}
+                                        onBlur={field.onBlur}
+                                        name={field.name}
+                                        ref={field.ref}
                                       />
                                     </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Leave empty to use 4 concurrent workers. Allowed range: 1–16.'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='task_polling_interval_ms'
+                                render={({ field }) => (
+                                  <FormItem className='px-4 py-3'>
+                                    <FormLabel>
+                                      {t('Task polling start interval (ms)')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        min={0}
+                                        max={60000}
+                                        step={1}
+                                        placeholder={
+                                          currentDisableTaskPollingSleep
+                                            ? '0'
+                                            : '250'
+                                        }
+                                        value={field.value ?? ''}
+                                        onChange={(event) => {
+                                          if (event.target.value === '') {
+                                            field.onChange(undefined)
+                                            return
+                                          }
+                                          field.onChange(
+                                            event.target.valueAsNumber
+                                          )
+                                        }}
+                                        onBlur={field.onBlur}
+                                        name={field.name}
+                                        ref={field.ref}
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Leave empty to start tasks every 250 ms. Legacy skip-delay channels inherit 0 ms. Allowed range: 0–60000 ms.'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='sse_max_event_size_mb'
+                                render={({ field }) => (
+                                  <FormItem className='px-4 py-3'>
+                                    <FormLabel>
+                                      {t('SSE max event size (MiB)')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        min={1}
+                                        max={128}
+                                        step={1}
+                                        placeholder={String(
+                                          globalSseMaxEventSizeMb
+                                        )}
+                                        value={field.value ?? ''}
+                                        onChange={(event) => {
+                                          if (event.target.value === '') {
+                                            field.onChange(undefined)
+                                            return
+                                          }
+                                          field.onChange(
+                                            event.target.valueAsNumber
+                                          )
+                                        }}
+                                        onBlur={field.onBlur}
+                                        name={field.name}
+                                        ref={field.ref}
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Leave empty to inherit the system SSE event size. Allowed range: 1–128 MiB.'
+                                      )}
+                                      <span className='mt-1 block'>
+                                        {t(
+                                          'Current effective value: {{value}} MiB ({{source}})',
+                                          {
+                                            value:
+                                              currentSseMaxEventSizeMb ??
+                                              globalSseMaxEventSizeMb,
+                                            source:
+                                              currentSseMaxEventSizeMb ===
+                                              undefined
+                                                ? t('system setting')
+                                                : t('channel override'),
+                                          }
+                                        )}
+                                      </span>
+                                    </FormDescription>
+                                    <FormMessage />
                                   </FormItem>
                                 )}
                               />
@@ -4243,27 +4420,8 @@ export function ChannelMutateDrawer({
                                 )}
                               />
 
-                              <FormField
-                                control={form.control}
-                                name='force_http1'
-                                render={({ field }) => (
-                                  <FormItem className='flex items-center justify-between px-4 py-3'>
-                                    <div className='space-y-0.5'>
-                                      <FormLabel>{t('Force HTTP/1.1')}</FormLabel>
-                                      <FormDescription>
-                                        {t(
-                                          'Disable HTTP/2 for this channel to avoid upstream RST_STREAM issues.'
-                                        )}
-                                      </FormDescription>
-                                    </div>
-                                    <FormControl>
-                                      <Switch
-                                        checked={field.value}
-                                        onCheckedChange={field.onChange}
-                                      />
-                                    </FormControl>
-                                  </FormItem>
-                                )}
+                              <ChannelUpstreamHTTPSection
+                                globalConfig={globalUpstreamHTTPConfig}
                               />
                             </div>
 

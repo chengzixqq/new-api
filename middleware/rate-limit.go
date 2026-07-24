@@ -7,10 +7,15 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/common/limiter"
 	"github.com/gin-gonic/gin"
 )
 
-var timeFormat = "2006-01-02T15:04:05.000Z"
+const (
+	redisRateLimitKeyPrefix = "rateLimit:sw:"
+	redisRateLimitTimeout   = time.Second
+	timeFormat              = "2006-01-02T15:04:05.000Z"
+)
 
 var inMemoryRateLimiter common.InMemoryRateLimiter
 
@@ -19,49 +24,36 @@ var defNext = func(c *gin.Context) {
 }
 
 func redisRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark string) {
-	ctx := context.Background()
-	rdb := common.RDB
-	key := "rateLimit:" + mark + c.ClientIP()
-	listLength, err := rdb.LLen(ctx, key).Result()
+	key := redisIPRateLimitKey(mark, c.ClientIP())
+	applyRedisRateLimit(c, key, maxRequestNum, duration)
+}
+
+func redisIPRateLimitKey(mark, ip string) string {
+	return redisRateLimitKeyPrefix + mark + ":ip:" + ip
+}
+
+func redisUserRateLimitKey(mark string, userId int) string {
+	return fmt.Sprintf("%s%s:user:%d", redisRateLimitKeyPrefix, mark, userId)
+}
+
+func applyRedisRateLimit(c *gin.Context, key string, maxRequestNum int, duration int64) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), redisRateLimitTimeout)
+	defer cancel()
+
+	allowed, retryAfter, err := limiter.SlidingWindowAllow(ctx, common.RDB, key, maxRequestNum, duration)
 	if err != nil {
-		fmt.Println(err.Error())
+		common.SysError(fmt.Sprintf("Redis rate limit failed: %v", err))
 		c.Status(http.StatusInternalServerError)
 		c.Abort()
 		return
 	}
-	if listLength < int64(maxRequestNum) {
-		rdb.LPush(ctx, key, time.Now().Format(timeFormat))
-		rdb.Expire(ctx, key, common.RateLimitKeyExpirationDuration)
-	} else {
-		oldTimeStr, _ := rdb.LIndex(ctx, key, -1).Result()
-		oldTime, err := time.Parse(timeFormat, oldTimeStr)
-		if err != nil {
-			fmt.Println(err)
-			c.Status(http.StatusInternalServerError)
-			c.Abort()
-			return
-		}
-		nowTimeStr := time.Now().Format(timeFormat)
-		nowTime, err := time.Parse(timeFormat, nowTimeStr)
-		if err != nil {
-			fmt.Println(err)
-			c.Status(http.StatusInternalServerError)
-			c.Abort()
-			return
-		}
-		// time.Since will return negative number!
-		// See: https://stackoverflow.com/questions/50970900/why-is-time-since-returning-negative-durations-on-windows
-		if int64(nowTime.Sub(oldTime).Seconds()) < duration {
-			rdb.Expire(ctx, key, common.RateLimitKeyExpirationDuration)
-			c.Status(http.StatusTooManyRequests)
-			c.Abort()
-			return
-		} else {
-			rdb.LPush(ctx, key, time.Now().Format(timeFormat))
-			rdb.LTrim(ctx, key, 0, int64(maxRequestNum-1))
-			rdb.Expire(ctx, key, common.RateLimitKeyExpirationDuration)
-		}
+	if allowed {
+		return
 	}
+
+	c.Header("Retry-After", fmt.Sprintf("%d", retryAfter))
+	c.Status(http.StatusTooManyRequests)
+	c.Abort()
 }
 
 func memoryRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark string) {
@@ -128,7 +120,7 @@ func userRateLimitFactory(maxRequestNum int, duration int64, mark string) func(c
 				c.Abort()
 				return
 			}
-			key := fmt.Sprintf("rateLimit:%s:user:%d", mark, userId)
+			key := redisUserRateLimitKey(mark, userId)
 			userRedisRateLimiter(c, maxRequestNum, duration, key)
 		}
 	}
@@ -153,46 +145,7 @@ func userRateLimitFactory(maxRequestNum int, duration int64, mark string) func(c
 // userRedisRateLimiter is like redisRateLimiter but accepts a pre-built key
 // (to support user-ID-based keys).
 func userRedisRateLimiter(c *gin.Context, maxRequestNum int, duration int64, key string) {
-	ctx := context.Background()
-	rdb := common.RDB
-	listLength, err := rdb.LLen(ctx, key).Result()
-	if err != nil {
-		fmt.Println(err.Error())
-		c.Status(http.StatusInternalServerError)
-		c.Abort()
-		return
-	}
-	if listLength < int64(maxRequestNum) {
-		rdb.LPush(ctx, key, time.Now().Format(timeFormat))
-		rdb.Expire(ctx, key, common.RateLimitKeyExpirationDuration)
-	} else {
-		oldTimeStr, _ := rdb.LIndex(ctx, key, -1).Result()
-		oldTime, err := time.Parse(timeFormat, oldTimeStr)
-		if err != nil {
-			fmt.Println(err)
-			c.Status(http.StatusInternalServerError)
-			c.Abort()
-			return
-		}
-		nowTimeStr := time.Now().Format(timeFormat)
-		nowTime, err := time.Parse(timeFormat, nowTimeStr)
-		if err != nil {
-			fmt.Println(err)
-			c.Status(http.StatusInternalServerError)
-			c.Abort()
-			return
-		}
-		if int64(nowTime.Sub(oldTime).Seconds()) < duration {
-			rdb.Expire(ctx, key, common.RateLimitKeyExpirationDuration)
-			c.Status(http.StatusTooManyRequests)
-			c.Abort()
-			return
-		} else {
-			rdb.LPush(ctx, key, time.Now().Format(timeFormat))
-			rdb.LTrim(ctx, key, 0, int64(maxRequestNum-1))
-			rdb.Expire(ctx, key, common.RateLimitKeyExpirationDuration)
-		}
-	}
+	applyRedisRateLimit(c, key, maxRequestNum, duration)
 }
 
 // SearchRateLimit returns a per-user rate limiter for search endpoints.

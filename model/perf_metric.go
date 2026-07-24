@@ -78,6 +78,46 @@ type PerfMetricSummaryBucket struct {
 	GenerationMs   int64  `json:"generation_ms"`
 }
 
+// PerfMetricMatrixRow is the storage-level shape used by the model-health
+// matrix query.  Keep the raw numerators and denominators intact so callers can
+// aggregate/downsample without averaging averages.
+type PerfMetricMatrixRow struct {
+	ModelName      string `json:"model_name"`
+	Group          string `json:"group" gorm:"column:group_name"`
+	BucketTs       int64  `json:"bucket_ts"`
+	RequestCount   int64  `json:"request_count"`
+	SuccessCount   int64  `json:"success_count"`
+	TotalLatencyMs int64  `json:"total_latency_ms"`
+	TtftSumMs      int64  `json:"ttft_sum_ms"`
+	TtftCount      int64  `json:"ttft_count"`
+	OutputTokens   int64  `json:"output_tokens"`
+	GenerationMs   int64  `json:"generation_ms"`
+}
+
+// GetPerfMetricsMatrix returns raw completed buckets for a model x group
+// selection. nil filters mean "all" while an explicitly empty slice means
+// "none". Metrics are not averaged here; aggregation belongs to the caller.
+func GetPerfMetricsMatrix(startTs int64, endTs int64, models []string, groups []string) ([]PerfMetricMatrixRow, error) {
+	rows := make([]PerfMetricMatrixRow, 0)
+	if models != nil && len(models) == 0 {
+		return rows, nil
+	}
+	if groups != nil && len(groups) == 0 {
+		return rows, nil
+	}
+	query := DB.Model(&PerfMetric{}).
+		Select("model_name, "+commonGroupCol+" AS group_name, bucket_ts, request_count, success_count, total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms").
+		Where("bucket_ts >= ? AND bucket_ts <= ?", startTs, endTs)
+	if models != nil {
+		query = query.Where("model_name IN ?", models)
+	}
+	if groups != nil {
+		query = query.Where(commonGroupCol+" IN ?", groups)
+	}
+	err := query.Order("bucket_ts ASC").Find(&rows).Error
+	return rows, err
+}
+
 func GetPerfMetricsSummaryAll(startTs int64, endTs int64, groups []string) ([]PerfMetricSummary, error) {
 	var summaries []PerfMetricSummary
 	query := DB.Model(&PerfMetric{}).

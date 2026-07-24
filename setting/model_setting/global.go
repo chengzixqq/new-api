@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/setting/config"
 )
 
@@ -36,6 +38,10 @@ type GlobalSettings struct {
 	PassThroughRequestEnabled        bool                             `json:"pass_through_request_enabled"`
 	ThinkingModelBlacklist           []string                         `json:"thinking_model_blacklist"`
 	ChatCompletionsToResponsesPolicy ChatCompletionsToResponsesPolicy `json:"chat_completions_to_responses_policy"`
+	SSEMaxEventSizeMB                *int                             `json:"sse_max_event_size_mb"`
+	UpstreamHTTPMode                 dto.UpstreamHTTPMode             `json:"upstream_http_mode"`
+	HTTP2ConnectionPoolSize          *int                             `json:"http2_connection_pool_size"`
+	HTTP1BodyThresholdKiB            *int                             `json:"http1_body_threshold_kib"`
 }
 
 // 默认配置
@@ -61,6 +67,25 @@ func init() {
 
 func GetGlobalSettings() *GlobalSettings {
 	return &globalSettings
+}
+
+// GetSSEMaxEventSizeBytes resolves the maximum size of one upstream SSE event.
+// A channel override is intentionally allowed to be either smaller or larger
+// than the system-wide value.
+func GetSSEMaxEventSizeBytes(channelOverride *int) int {
+	if channelOverride != nil && *channelOverride >= constant.MinSSEMaxEventSizeMB && *channelOverride <= constant.MaxSSEMaxEventSizeMB {
+		return *channelOverride << 20
+	}
+	if globalSettings.SSEMaxEventSizeMB != nil && *globalSettings.SSEMaxEventSizeMB >= constant.MinSSEMaxEventSizeMB && *globalSettings.SSEMaxEventSizeMB <= constant.MaxSSEMaxEventSizeMB {
+		return *globalSettings.SSEMaxEventSizeMB << 20
+	}
+	if constant.StreamingMaxBufferSize >= constant.MinSSEMaxEventSizeMB<<20 && constant.StreamingMaxBufferSize <= constant.MaxSSEMaxEventSizeMB<<20 {
+		return constant.StreamingMaxBufferSize
+	}
+	if constant.StreamScannerMaxBufferMB >= constant.MinSSEMaxEventSizeMB && constant.StreamScannerMaxBufferMB <= constant.MaxSSEMaxEventSizeMB {
+		return constant.StreamScannerMaxBufferMB << 20
+	}
+	return constant.DefaultSSEMaxEventSizeMB << 20
 }
 
 // ShouldPreserveThinkingSuffix 判断模型是否配置为保留 thinking/-nothinking/-low/-high/-medium 后缀

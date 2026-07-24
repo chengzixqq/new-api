@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
@@ -31,6 +32,17 @@ var completionRatioMetaOptionKeys = []string{
 
 func isPaymentComplianceOptionKey(key string) bool {
 	return strings.HasPrefix(key, "payment_setting.compliance_")
+}
+
+func isRetiredUptimeOptionKey(key string) bool {
+	switch key {
+	case "console_setting.uptime_kuma_groups", "console_setting.uptime_kuma_enabled",
+		"UptimeKumaUrl", "UptimeKumaSlug", "PoolStatusEnabled",
+		"PoolStatusIntervalSeconds", "PoolStatusCategoryName":
+		return true
+	default:
+		return strings.HasPrefix(key, "POOL_STATUS_")
+	}
 }
 
 func isPositiveOptionValue(value string) bool {
@@ -80,6 +92,9 @@ func GetOptions(c *gin.Context) {
 	optionValues := make(map[string]string)
 	common.OptionMapRWMutex.Lock()
 	for k, v := range common.OptionMap {
+		if isRetiredUptimeOptionKey(k) {
+			continue
+		}
 		value := common.Interface2String(v)
 		isSensitiveKey := strings.HasSuffix(k, "Token") ||
 			strings.HasSuffix(k, "Secret") ||
@@ -295,6 +310,52 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "global.sse_max_event_size_mb":
+		value := strings.TrimSpace(option.Value.(string))
+		if value == "" || value == "null" || value == "<nil>" {
+			option.Value = "null"
+			break
+		}
+		maxEventSizeMB, parseErr := strconv.Atoi(value)
+		if parseErr != nil || maxEventSizeMB < constant.MinSSEMaxEventSizeMB || maxEventSizeMB > constant.MaxSSEMaxEventSizeMB {
+			common.ApiErrorMsg(c, fmt.Sprintf("sse_max_event_size_mb must be between %d and %d", constant.MinSSEMaxEventSizeMB, constant.MaxSSEMaxEventSizeMB))
+			return
+		}
+	case "global.upstream_http_mode":
+		value := strings.ToLower(strings.TrimSpace(option.Value.(string)))
+		if value == "" || value == "null" || value == "<nil>" {
+			option.Value = ""
+			break
+		}
+		switch value {
+		case constant.UpstreamHTTPModeAuto, constant.UpstreamHTTPModeHTTP1, constant.UpstreamHTTPModeHybrid:
+			option.Value = value
+		default:
+			common.ApiErrorMsg(c, "upstream_http_mode must be one of auto, http1, hybrid")
+			return
+		}
+	case "global.http2_connection_pool_size":
+		value := strings.TrimSpace(option.Value.(string))
+		if value == "" || value == "null" || value == "<nil>" {
+			option.Value = "null"
+			break
+		}
+		poolSize, parseErr := strconv.Atoi(value)
+		if parseErr != nil || poolSize < constant.MinHTTP2ConnectionPoolSize || poolSize > constant.MaxHTTP2ConnectionPoolSize {
+			common.ApiErrorMsg(c, fmt.Sprintf("http2_connection_pool_size must be between %d and %d", constant.MinHTTP2ConnectionPoolSize, constant.MaxHTTP2ConnectionPoolSize))
+			return
+		}
+	case "global.http1_body_threshold_kib":
+		value := strings.TrimSpace(option.Value.(string))
+		if value == "" || value == "null" || value == "<nil>" {
+			option.Value = "null"
+			break
+		}
+		thresholdKiB, parseErr := strconv.Atoi(value)
+		if parseErr != nil || thresholdKiB < constant.MinHTTP1BodyThresholdKiB || thresholdKiB > constant.MaxHTTP1BodyThresholdKiB {
+			common.ApiErrorMsg(c, fmt.Sprintf("http1_body_threshold_kib must be between %d and %d", constant.MinHTTP1BodyThresholdKiB, constant.MaxHTTP1BodyThresholdKiB))
+			return
+		}
 	case "console_setting.api_info":
 		err = console_setting.ValidateConsoleSettings(option.Value.(string), "ApiInfo")
 		if err != nil {
@@ -315,15 +376,6 @@ func UpdateOption(c *gin.Context) {
 		}
 	case "console_setting.faq":
 		err = console_setting.ValidateConsoleSettings(option.Value.(string), "FAQ")
-		if err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
-			return
-		}
-	case "console_setting.uptime_kuma_groups":
-		err = console_setting.ValidateConsoleSettings(option.Value.(string), "UptimeKumaGroups")
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,

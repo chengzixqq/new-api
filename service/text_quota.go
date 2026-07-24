@@ -58,13 +58,14 @@ type textQuotaSummary struct {
 	ToolCallSurchargeQuota   decimal.Decimal
 }
 
-func priceOverrideToQuota(price *float64, tokens decimal.Decimal) (decimal.Decimal, bool) {
+func priceOverrideToQuota(price *float64, tokens decimal.Decimal, multiplier decimal.Decimal) (decimal.Decimal, bool) {
 	if price == nil {
 		return decimal.Zero, false
 	}
 	return decimal.NewFromFloat(*price).
 		Div(decimal.NewFromInt(1_000_000)).
 		Mul(tokens).
+		Mul(multiplier).
 		Mul(decimal.NewFromFloat(common.QuotaPerUnit)), true
 }
 
@@ -101,46 +102,47 @@ func applyTextGroupPriceOverride(relayInfo *relaycommon.RelayInfo, summary *text
 		return decimal.Zero, false
 	}
 	override := relayInfo.PriceData.GroupPriceOverride
+	personalMultiplier := decimal.NewFromFloat(relayInfo.PriceData.PersonalGroupPriceMultiplier())
 	quota := decimal.Zero
 	applied := false
 
-	if value, ok := priceOverrideToQuota(override.PromptPrice, components["prompt"]); ok {
+	if value, ok := priceOverrideToQuota(override.PromptPrice, components["prompt"], personalMultiplier); ok {
 		quota = quota.Add(value)
 		applied = true
 	} else {
 		quota = quota.Add(components["prompt"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
 	}
-	if value, ok := priceOverrideToQuota(override.CompletionPrice, components["completion"]); ok {
+	if value, ok := priceOverrideToQuota(override.CompletionPrice, components["completion"], personalMultiplier); ok {
 		quota = quota.Add(value)
 		applied = true
 	} else {
 		quota = quota.Add(components["completion"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.CompletionRatio)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
 	}
-	if value, ok := priceOverrideToQuota(override.CachePrice, components["cache"]); ok {
+	if value, ok := priceOverrideToQuota(override.CachePrice, components["cache"], personalMultiplier); ok {
 		quota = quota.Add(value)
 		applied = true
 	} else {
 		quota = quota.Add(components["cache"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.CacheRatio)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
 	}
-	if value, ok := priceOverrideToQuota(override.CreateCachePrice, components["cache_create"]); ok {
+	if value, ok := priceOverrideToQuota(override.CreateCachePrice, components["cache_create"], personalMultiplier); ok {
 		quota = quota.Add(value)
 		applied = true
 	} else {
 		quota = quota.Add(components["cache_create"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.CacheCreationRatio)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
 	}
-	if value, ok := priceOverrideToQuota(override.CreateCachePrice, components["cache_create_5m"]); ok {
+	if value, ok := priceOverrideToQuota(override.CreateCachePrice, components["cache_create_5m"], personalMultiplier); ok {
 		quota = quota.Add(value)
 		applied = true
 	} else {
 		quota = quota.Add(components["cache_create_5m"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.CacheCreationRatio5m)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
 	}
-	if value, ok := priceOverrideToQuota(override.CreateCachePrice, components["cache_create_1h"]); ok {
+	if value, ok := priceOverrideToQuota(override.CreateCachePrice, components["cache_create_1h"], personalMultiplier); ok {
 		quota = quota.Add(value)
 		applied = true
 	} else {
 		quota = quota.Add(components["cache_create_1h"].Mul(decimal.NewFromFloat(summary.ModelRatio)).Mul(decimal.NewFromFloat(summary.CacheCreationRatio1h)).Mul(decimal.NewFromFloat(summary.GroupRatio)))
 	}
-	if value, ok := priceOverrideToQuota(override.ImagePrice, components["image"]); ok {
+	if value, ok := priceOverrideToQuota(override.ImagePrice, components["image"], personalMultiplier); ok {
 		quota = quota.Add(value)
 		applied = true
 	} else {
@@ -386,6 +388,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	dCacheCreationRatio5m := decimal.NewFromFloat(summary.CacheCreationRatio5m)
 	dCacheCreationRatio1h := decimal.NewFromFloat(summary.CacheCreationRatio1h)
 	dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
+	dPersonalGroupPriceMultiplier := decimal.NewFromFloat(relayInfo.PriceData.PersonalGroupPriceMultiplier())
 
 	ratio := dModelRatio.Mul(dGroupRatio)
 	summary.ToolCallSurchargeQuota = calculateTextToolCallSurcharge(ctx, relayInfo, &summary)
@@ -438,7 +441,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			if override := relayInfo.PriceData.GroupPriceOverride; override != nil && override.AudioPrice != nil {
 				summary.AudioInputPrice = *override.AudioPrice
 				baseTokens = baseTokens.Sub(dAudioTokens)
-				if value, ok := priceOverrideToQuota(override.AudioPrice, dAudioTokens); ok {
+				if value, ok := priceOverrideToQuota(override.AudioPrice, dAudioTokens, dPersonalGroupPriceMultiplier); ok {
 					audioInputQuota = value
 				}
 			} else {
@@ -491,7 +494,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		}
 		quotaCalculateDecimal := decimal.NewFromFloat(summary.ModelPrice).Mul(dQuotaPerUnit).Mul(dGroupRatio)
 		if override := relayInfo.PriceData.GroupPriceOverride; override != nil && override.ModelPrice != nil {
-			quotaCalculateDecimal = decimal.NewFromFloat(*override.ModelPrice).Mul(dQuotaPerUnit)
+			quotaCalculateDecimal = decimal.NewFromFloat(*override.ModelPrice).Mul(dQuotaPerUnit).Mul(dPersonalGroupPriceMultiplier)
 			summary.ModelPrice = *override.ModelPrice
 		}
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(summary.ToolCallSurchargeQuota)
@@ -534,6 +537,10 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 }
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
+	if relayInfo != nil && relayInfo.SSELimitExceededBeforeOutput() {
+		return
+	}
+	usage = conservativeInterruptedStreamUsage(ctx, relayInfo, usage)
 	originUsage := usage
 	billingUsage := effectiveBillingUsage(usage)
 	if usage == nil {

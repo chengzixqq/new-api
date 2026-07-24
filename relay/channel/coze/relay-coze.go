@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -47,7 +46,7 @@ func convertCozeChatRequest(c *gin.Context, request dto.GeneralOpenAIRequest) *C
 }
 
 func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := service.ReadResponseBodyLimited(resp.Body, cozeResponseBodyLimit)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
@@ -56,7 +55,7 @@ func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 	var response dto.TextResponse
 	var cozeResponse CozeChatDetailResponse
 	response.Model = info.UpstreamModelName
-	err = json.Unmarshal(responseBody, &cozeResponse)
+	err = common.Unmarshal(responseBody, &cozeResponse)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
@@ -86,7 +85,7 @@ func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 			FinishReason: "stop",
 		},
 	}
-	jsonResponse, err := json.Marshal(response)
+	jsonResponse, err := common.Marshal(response)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
@@ -98,7 +97,7 @@ func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 }
 
 func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
-	scanner := helper.NewStreamScanner(resp.Body)
+	scanner := helper.NewStreamScanner(resp.Body, info)
 	scanner.Split(bufio.ScanLines)
 	helper.SetEventStreamHeaders(c)
 	id := helper.GetResponseID(c)
@@ -154,7 +153,7 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 	case "conversation.chat.completed":
 		// 将 data 解析为 CozeChatResponseData
 		var chatData CozeChatResponseData
-		err := json.Unmarshal([]byte(data), &chatData)
+		err := common.Unmarshal([]byte(data), &chatData)
 		if err != nil {
 			common.SysLog("error_unmarshalling_stream_response: " + err.Error())
 			return
@@ -171,14 +170,14 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 	case "conversation.message.delta":
 		// 将 data 解析为 CozeChatV3MessageDetail
 		var messageData CozeChatV3MessageDetail
-		err := json.Unmarshal([]byte(data), &messageData)
+		err := common.Unmarshal([]byte(data), &messageData)
 		if err != nil {
 			common.SysLog("error_unmarshalling_stream_response: " + err.Error())
 			return
 		}
 
 		var content string
-		err = json.Unmarshal(messageData.Content, &content)
+		err = common.Unmarshal(messageData.Content, &content)
 		if err != nil {
 			common.SysLog("error_unmarshalling_stream_response: " + err.Error())
 			return
@@ -203,7 +202,7 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 
 	case "error":
 		var errorData CozeError
-		err := json.Unmarshal([]byte(data), &errorData)
+		err := common.Unmarshal([]byte(data), &errorData)
 		if err != nil {
 			common.SysLog("error_unmarshalling_stream_response: " + err.Error())
 			return
@@ -218,7 +217,7 @@ func checkIfChatComplete(a *Adaptor, c *gin.Context, info *relaycommon.RelayInfo
 
 	requestURL = requestURL + "?conversation_id=" + c.GetString("coze_conversation_id") + "&chat_id=" + c.GetString("coze_chat_id")
 	// 将 conversationId和chatId作为参数发送get请求
-	req, err := http.NewRequest("GET", requestURL, nil)
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, requestURL, nil)
 	if err != nil {
 		return err, false
 	}
@@ -238,11 +237,14 @@ func checkIfChatComplete(a *Adaptor, c *gin.Context, info *relaycommon.RelayInfo
 
 	// 解析 resp 到 CozeChatResponse
 	var cozeResponse CozeChatResponse
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := service.ReadResponseBodyLimited(resp.Body, cozeResponseBodyLimit)
 	if err != nil {
 		return fmt.Errorf("read response body failed: %w", err), false
 	}
-	err = json.Unmarshal(responseBody, &cozeResponse)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("coze retrieve returned status %d: %s", resp.StatusCode, common.LocalLogPreview(string(responseBody))), false
+	}
+	err = common.Unmarshal(responseBody, &cozeResponse)
 	if err != nil {
 		return fmt.Errorf("unmarshal response body failed: %w", err), false
 	}
@@ -253,7 +255,7 @@ func checkIfChatComplete(a *Adaptor, c *gin.Context, info *relaycommon.RelayInfo
 		c.Set("coze_input_count", cozeResponse.Data.Usage.InputCount)
 		return nil, true
 	} else if cozeResponse.Data.Status == "failed" || cozeResponse.Data.Status == "canceled" || cozeResponse.Data.Status == "requires_action" {
-		return fmt.Errorf("chat status: %s", cozeResponse.Data.Status), false
+		return fmt.Errorf("%w: %s", errCozeTerminalStatus, cozeResponse.Data.Status), false
 	} else {
 		return nil, false
 	}
@@ -261,34 +263,32 @@ func checkIfChatComplete(a *Adaptor, c *gin.Context, info *relaycommon.RelayInfo
 
 func getChatDetail(a *Adaptor, c *gin.Context, info *relaycommon.RelayInfo) (*http.Response, error) {
 	requestURL := fmt.Sprintf("%s/v3/chat/message/list", info.ChannelBaseUrl)
-
 	requestURL = requestURL + "?conversation_id=" + c.GetString("coze_conversation_id") + "&chat_id=" + c.GetString("coze_chat_id")
-	req, err := http.NewRequest("GET", requestURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("new request failed: %w", err)
+	var lastErr error
+	for attempt := 1; attempt <= cozeDetailMaxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, requestURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("new request failed: %w", err)
+		}
+		if err := a.SetupRequestHeader(c, &req.Header, info); err != nil {
+			return nil, fmt.Errorf("setup request header failed: %w", err)
+		}
+		resp, err := doRequest(req, info)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt < cozeDetailMaxAttempts {
+			if err := waitCozePoll(c.Request.Context(), cozePollInterval); err != nil {
+				return nil, err
+			}
+		}
 	}
-	err = a.SetupRequestHeader(c, &req.Header, info)
-	if err != nil {
-		return nil, fmt.Errorf("setup request header failed: %w", err)
-	}
-	resp, err := doRequest(req, info)
-	if err != nil {
-		return nil, fmt.Errorf("do request failed: %w", err)
-	}
-	return resp, nil
+	return nil, fmt.Errorf("get coze chat detail exhausted %d attempts: %w", cozeDetailMaxAttempts, lastErr)
 }
 
 func doRequest(req *http.Request, info *relaycommon.RelayInfo) (*http.Response, error) {
-	var client *http.Client
-	var err error // 声明 err 变量
-	if info.ChannelSetting.Proxy != "" {
-		client, err = service.NewProxyHttpClient(info.ChannelSetting.Proxy)
-		if err != nil {
-			return nil, fmt.Errorf("new proxy http client failed: %w", err)
-		}
-	} else {
-		client = service.GetHttpClient()
-	}
+	client := service.NewChannelUpstreamHTTPPolicyClient(info.ChannelId, info.ChannelSetting.Proxy, info.ChannelOtherSettings)
 	resp, err := client.Do(req)
 	if err != nil { // 增加对 client.Do(req) 返回错误的检查
 		return nil, fmt.Errorf("client.Do failed: %w", err)

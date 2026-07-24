@@ -102,6 +102,11 @@ export const getUserRoleOptions = (t: (key: string) => string) => [
 
 export const DEFAULT_GROUP = 'default' as const
 
+export const USER_GROUP_RATIO_OVERRIDE_LIMITS = {
+  MAX_ENTRIES: 256,
+  MAX_RATIO: 1000,
+} as const
+
 // ============================================================================
 // Third-party Binding Fields
 // ============================================================================

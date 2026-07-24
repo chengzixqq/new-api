@@ -1,18 +1,74 @@
 package channel
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	projectcommon "github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
-func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
-	t.Parallel()
+func TestDoRequest_DownstreamCancellationStopsUpstream(t *testing.T) {
+	originalDial := projectcommon.RelayDialTimeout
+	originalTLS := projectcommon.RelayTLSHandshakeTimeout
+	originalHeader := projectcommon.RelayResponseHeaderTimeout
+	projectcommon.RelayDialTimeout = 30
+	projectcommon.RelayTLSHandshakeTimeout = 10
+	projectcommon.RelayResponseHeaderTimeout = 300
+	t.Cleanup(func() {
+		projectcommon.RelayDialTimeout = originalDial
+		projectcommon.RelayTLSHandshakeTimeout = originalTLS
+		projectcommon.RelayResponseHeaderTimeout = originalHeader
+	})
+	require.NoError(t, service.InitHttpClient())
 
+	upstreamStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(upstreamStarted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	requestContext, cancel := context.WithCancel(context.Background())
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequestWithContext(requestContext, http.MethodPost, "/v1/chat/completions", nil)
+	upstreamRequest, err := http.NewRequest(http.MethodPost, server.URL, nil)
+	require.NoError(t, err)
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, requestErr := doRequest(ginContext, upstreamRequest, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}})
+		resultCh <- requestErr
+	}()
+
+	select {
+	case <-upstreamStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream request did not start")
+	}
+	cancel()
+
+	select {
+	case requestErr := <-resultCh:
+		require.ErrorIs(t, requestErr, context.Canceled)
+		var apiErr *types.NewAPIError
+		require.ErrorAs(t, requestErr, &apiErr)
+		require.True(t, types.IsSkipRetryError(apiErr))
+		require.False(t, types.IsRecordErrorLog(apiErr))
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream request did not stop after downstream cancellation")
+	}
+}
+
+func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -34,8 +90,6 @@ func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 }
 
 func TestProcessHeaderOverride_ChannelTestSkipsClientHeaderPlaceholder(t *testing.T) {
-	t.Parallel()
-
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -58,8 +112,6 @@ func TestProcessHeaderOverride_ChannelTestSkipsClientHeaderPlaceholder(t *testin
 }
 
 func TestProcessHeaderOverride_NonTestKeepsClientHeaderPlaceholder(t *testing.T) {
-	t.Parallel()
-
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -81,8 +133,6 @@ func TestProcessHeaderOverride_NonTestKeepsClientHeaderPlaceholder(t *testing.T)
 }
 
 func TestProcessHeaderOverride_RuntimeOverrideIsFinalHeaderMap(t *testing.T) {
-	t.Parallel()
-
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -112,8 +162,6 @@ func TestProcessHeaderOverride_RuntimeOverrideIsFinalHeaderMap(t *testing.T) {
 }
 
 func TestProcessHeaderOverride_PassthroughSkipsAcceptEncoding(t *testing.T) {
-	t.Parallel()
-
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -139,8 +187,6 @@ func TestProcessHeaderOverride_PassthroughSkipsAcceptEncoding(t *testing.T) {
 }
 
 func TestProcessHeaderOverride_PassHeadersTemplateSetsRuntimeHeaders(t *testing.T) {
-	t.Parallel()
-
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)

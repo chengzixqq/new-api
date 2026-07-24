@@ -100,7 +100,18 @@ func ensureLogRequestId(log *Log) {
 
 func createLog(log *Log) error {
 	ensureLogRequestId(log)
-	return LOG_DB.Create(log).Error
+	if !common.GetEnvOrDefaultBool("LOG_ROLLUP_ENABLED", false) || !LogRollupsSupported() {
+		return LOG_DB.Create(log).Error
+	}
+	return LOG_DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(log).Error; err != nil {
+			return err
+		}
+		return tx.Create(&LogRollupEvent{
+			LogID:     int64(log.Id),
+			CreatedAt: log.CreatedAt,
+		}).Error
+	})
 }
 
 func clickHouseLogOrder(prefix string) string {
@@ -465,19 +476,31 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	}
 }
 
-func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
+type LogQueryOptions struct {
+	Context    context.Context
+	UseRollup  bool
+	Now        time.Time
+	StaleAfter time.Duration
+}
+
+func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string, options LogQueryOptions) (logs []*Log, total int64, meta LogRollupQueryMeta, err error) {
+	queryContext := options.Context
+	if queryContext == nil {
+		queryContext = context.Background()
+	}
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB
 	} else {
 		tx = LOG_DB.Where("logs.type = ?", logType)
 	}
+	tx = tx.WithContext(queryContext)
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
-		return nil, 0, err
+		return nil, 0, meta, err
 	}
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.username", username); err != nil {
-		return nil, 0, err
+		return nil, 0, meta, err
 	}
 	if tokenName != "" {
 		tx = tx.Where("logs.token_name = ?", tokenName)
@@ -500,17 +523,49 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 	if group != "" {
 		tx = tx.Where("logs."+logGroupCol+" = ?", group)
 	}
-	err = tx.Model(&Log{}).Count(&total).Error
-	if err != nil {
-		return nil, 0, err
+	queryOffset := startIdx
+	meta.Source = "raw"
+	useRollup := options.UseRollup && requestId == "" && upstreamRequestId == ""
+	if useRollup {
+		filter := LogRollupFilter{
+			LogType:        logType,
+			StartTimestamp: startTimestamp,
+			EndTimestamp:   endTimestamp,
+			Username:       username,
+			TokenName:      tokenName,
+			ModelName:      modelName,
+			ChannelID:      channel,
+			Group:          group,
+		}
+		total, meta, err = QueryLogRollupTotal(queryContext, filter, options.Now, options.StaleAfter)
+		if err != nil {
+			return nil, 0, meta, err
+		}
+		if int64(startIdx) >= total {
+			return []*Log{}, total, meta, nil
+		}
+		if startIdx > 0 {
+			anchor, anchorMeta, anchorErr := QueryLogRollupPageAnchor(queryContext, filter, int64(startIdx), options.Now, options.StaleAfter)
+			if anchorErr != nil {
+				return nil, 0, anchorMeta, anchorErr
+			}
+			meta = anchorMeta
+			tx = tx.Where("logs.created_at <= ?", anchor.BucketEnd)
+			queryOffset = int(anchor.OffsetWithinBucket)
+		}
+	} else {
+		err = tx.Model(&Log{}).Count(&total).Error
+		if err != nil {
+			return nil, 0, meta, err
+		}
 	}
 	order := "logs.created_at desc, logs.id desc"
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("logs.")
 	}
-	err = tx.Order(order).Limit(num).Offset(startIdx).Find(&logs).Error
+	err = tx.Order(order).Limit(num).Offset(queryOffset).Find(&logs).Error
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, meta, err
 	}
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		assignDisplayLogIds(logs, startIdx)
@@ -544,7 +599,7 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 		} else {
 			// Bulk query channels from DB
 			if err = DB.Table("channels").Select("id, name").Where("id IN ?", channelIds.Items()).Find(&channels).Error; err != nil {
-				return logs, total, err
+				return logs, total, meta, err
 			}
 		}
 		channelMap := make(map[int]string, len(channels))
@@ -556,7 +611,7 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 		}
 	}
 
-	return logs, total, err
+	return logs, total, meta, err
 }
 
 const logSearchCountLimit = 10000
@@ -610,16 +665,23 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 }
 
 type Stat struct {
-	Quota int `json:"quota"`
-	Rpm   int `json:"rpm"`
-	Tpm   int `json:"tpm"`
+	Quota     int64  `json:"quota"`
+	Rpm       int64  `json:"rpm"`
+	Tpm       int64  `json:"tpm"`
+	UpdatedAt int64  `json:"updated_at,omitempty"`
+	Stale     bool   `json:"stale,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
-	tx := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
+func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, options LogQueryOptions) (stat Stat, err error) {
+	queryContext := options.Context
+	if queryContext == nil {
+		queryContext = context.Background()
+	}
+	tx := LOG_DB.WithContext(queryContext).Table("logs").Select("COALESCE(sum(quota), 0) quota")
 
 	// 为rpm和tpm创建单独的查询
-	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(completion_tokens), 0) tpm")
+	rpmTpmQuery := LOG_DB.WithContext(queryContext).Table("logs").Select("count(*) rpm, COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(completion_tokens), 0) tpm")
 
 	if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
 		return stat, err
@@ -659,9 +721,30 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 	rpmTpmQuery = rpmTpmQuery.Where("created_at >= ?", time.Now().Add(-60*time.Second).Unix())
 
 	// 执行查询
-	if err := tx.Scan(&stat).Error; err != nil {
+	if options.UseRollup {
+		aggregate, meta, rollupErr := QueryLogRollupStat(queryContext, LogRollupFilter{
+			LogType:        logType,
+			StartTimestamp: startTimestamp,
+			EndTimestamp:   endTimestamp,
+			Username:       username,
+			TokenName:      tokenName,
+			ModelName:      modelName,
+			ChannelID:      channel,
+			Group:          group,
+		}, options.Now, options.StaleAfter)
+		if rollupErr != nil {
+			return stat, rollupErr
+		}
+		stat.Quota = aggregate.Quota
+		stat.UpdatedAt = meta.UpdatedAt
+		stat.Stale = meta.Stale
+		stat.Source = meta.Source
+	} else if err := tx.Scan(&stat).Error; err != nil {
 		common.SysError("failed to query log stat: " + err.Error())
 		return stat, errors.New("查询统计数据失败")
+	}
+	if stat.Source == "" {
+		stat.Source = "raw"
 	}
 	if err := rpmTpmQuery.Scan(&stat).Error; err != nil {
 		common.SysError("failed to query rpm/tpm stat: " + err.Error())
@@ -707,6 +790,21 @@ func DeleteOldLogBatch(ctx context.Context, targetTimestamp int64, limit int) (i
 	if nil != ctx.Err() {
 		return 0, ctx.Err()
 	}
+	var leaseHeartbeat *logRollupLeaseHeartbeat
+	if LogRollupsSupported() && DB != nil && DB.Migrator().HasTable(&LogMinuteRollup{}) {
+		owner := fmt.Sprintf("log-delete:%d", time.Now().UnixNano())
+		const deleteLeaseDuration = 5 * time.Minute
+		if err := AcquireLogRollupLeaseUntilAvailable(ctx, owner, deleteLeaseDuration); err != nil {
+			return 0, err
+		}
+		defer func() {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = ReleaseLogRollupLease(releaseCtx, owner)
+		}()
+		leaseHeartbeat = startLogRollupLeaseHeartbeat(ctx, owner, deleteLeaseDuration)
+		defer leaseHeartbeat.Stop()
+	}
 
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		// ClickHouse DELETE is a heavy mutation that rewrites data parts, so
@@ -733,6 +831,11 @@ func DeleteOldLogBatch(ctx context.Context, targetTimestamp int64, limit int) (i
 	if nil != result.Error {
 		return 0, result.Error
 	}
+	if leaseHeartbeat != nil {
+		if err := leaseHeartbeat.Check(); err != nil {
+			return 0, err
+		}
+	}
 	return result.RowsAffected, nil
 }
 
@@ -757,6 +860,11 @@ func DeleteOldLog(ctx context.Context, targetTimestamp int64, limit int) (int64,
 
 		if rowsAffected < int64(limit) {
 			break
+		}
+	}
+	if LogRollupsSupported() && DB != nil && DB.Migrator().HasTable(&LogMinuteRollup{}) {
+		if err := CleanupLogRollups(ctx, targetTimestamp); err != nil {
+			return total, err
 		}
 	}
 

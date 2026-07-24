@@ -185,6 +185,12 @@ const Setting = () => {
   };
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search);
+    if (searchParams.get('section') === 'uptime-kuma') {
+      searchParams.set('section', 'model-health');
+      searchParams.set('tab', 'dashboard');
+      navigate(`?${searchParams.toString()}`, { replace: true });
+      return;
+    }
     const tab = searchParams.get('tab');
     if (tab) {
       setTabActiveKey(tab);

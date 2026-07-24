@@ -10,6 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseUpstreamWarmupURLs(t *testing.T) {
@@ -111,40 +116,49 @@ func TestParseUpstreamWarmupConcurrency(t *testing.T) {
 	}
 }
 
-func TestMakeTargetFromURL_Dedup(t *testing.T) {
+func TestMakeResolvedWarmupTargets_DedupAndRedactsProxyCredentials(t *testing.T) {
+	initializeUpstreamHTTPClientsForTest(t)
 	seen := make(map[string]bool)
-
-	first, ok := makeTargetFromURL("https://api.example.com/v1/models", "", seen)
-	if !ok {
-		t.Fatal("expected first target to be accepted")
-	}
-	if first.key != "https://api.example.com|" || first.host != "api.example.com" || first.proxy != "" {
-		t.Fatalf("unexpected first target: %#v", first)
+	resolved := model_setting.ResolvedUpstreamHTTPConfig{
+		Mode:                    dto.UpstreamHTTPModeAuto,
+		HTTP2ConnectionPoolSize: 1,
+		HTTP1BodyThresholdKiB:   dto.DefaultHTTP1BodyThresholdKiB,
 	}
 
-	if _, ok := makeTargetFromURL("https://api.example.com/anything", "", seen); ok {
-		t.Fatal("expected duplicate scheme/host/proxy target to be rejected")
-	}
+	firstTargets := makeResolvedWarmupTargets("https://api.example.com/v1/models", "", 0, resolved, seen)
+	require.Len(t, firstTargets, 1)
+	first := firstTargets[0]
+	assert.Equal(t, "api.example.com", first.host)
+	assert.Empty(t, first.proxy)
+	assert.Contains(t, first.key, "https://api.example.com|")
 
-	proxied, ok := makeTargetFromURL("https://api.example.com/v1/models", "http://proxy.example:8080", seen)
-	if !ok {
-		t.Fatal("expected same host with different proxy to be accepted")
-	}
-	if proxied.key != "https://api.example.com|http://proxy.example:8080" || proxied.proxy != "http://proxy.example:8080" {
-		t.Fatalf("unexpected proxied target: %#v", proxied)
-	}
+	duplicate := makeResolvedWarmupTargets("https://api.example.com/anything", "", 0, resolved, seen)
+	assert.Empty(t, duplicate)
+
+	const proxyURL = "http://warmup-user:warmup-password@proxy.example:8080"
+	proxiedTargets := makeResolvedWarmupTargets("https://api.example.com/v1/models", proxyURL, 0, resolved, seen)
+	require.Len(t, proxiedTargets, 1)
+	proxied := proxiedTargets[0]
+	assert.Equal(t, "http://proxy.example:8080", proxied.proxy)
+	assert.NotContains(t, proxied.key, "warmup-user")
+	assert.NotContains(t, proxied.key, "warmup-password")
+	assert.NotContains(t, proxied.proxy, "warmup-user")
+	assert.NotContains(t, proxied.proxy, "warmup-password")
 }
 
-func TestMakeTargetFromURL_ForbiddenPath(t *testing.T) {
+func TestMakeResolvedWarmupTargets_ForbiddenPath(t *testing.T) {
 	seen := make(map[string]bool)
+	resolved := model_setting.ResolvedUpstreamHTTPConfig{
+		Mode:                    dto.UpstreamHTTPModeAuto,
+		HTTP2ConnectionPoolSize: 1,
+		HTTP1BodyThresholdKiB:   dto.DefaultHTTP1BodyThresholdKiB,
+	}
 	for _, rawURL := range []string{
 		"https://api.example.com/v1/chat/completions",
 		"https://api.example.com/v1/responses",
 		"https://api.example.com/v1/images/generations",
 	} {
-		if _, ok := makeTargetFromURL(rawURL, "", seen); ok {
-			t.Fatalf("expected billable path %q to be rejected", rawURL)
-		}
+		assert.Empty(t, makeResolvedWarmupTargets(rawURL, "", 0, resolved, seen), rawURL)
 	}
 }
 

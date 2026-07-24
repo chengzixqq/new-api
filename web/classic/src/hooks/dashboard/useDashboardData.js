@@ -76,11 +76,6 @@ export const useDashboardData = (userState, userDispatch, statusState) => {
     tpm: [],
   });
 
-  // ========== Uptime 数据 ==========
-  const [uptimeData, setUptimeData] = useState([]);
-  const [uptimeLoading, setUptimeLoading] = useState(false);
-  const [activeUptimeTab, setActiveUptimeTab] = useState('');
-
   // ========== 常量 ==========
   const now = new Date();
   const isAdminUser = isAdmin();
@@ -90,10 +85,8 @@ export const useDashboardData = (userState, userDispatch, statusState) => {
   const announcementsEnabled =
     statusState?.status?.announcements_enabled ?? true;
   const faqEnabled = statusState?.status?.faq_enabled ?? true;
-  const uptimeEnabled = statusState?.status?.uptime_kuma_enabled ?? true;
-
   const hasApiInfoPanel = apiInfoEnabled;
-  const hasInfoPanels = announcementsEnabled || faqEnabled || uptimeEnabled;
+  const hasInfoPanels = announcementsEnabled || faqEnabled;
 
   // ========== Memoized Values ==========
   const timeOptions = useMemo(
@@ -193,26 +186,6 @@ export const useDashboardData = (userState, userDispatch, statusState) => {
     }
   }, [inputs, dataExportDefaultTime, isAdminUser, now]);
 
-  const loadUptimeData = useCallback(async () => {
-    setUptimeLoading(true);
-    try {
-      const res = await API.get('/api/uptime/status');
-      const { success, message, data } = res.data;
-      if (success) {
-        setUptimeData(data || []);
-        if (data && data.length > 0 && !activeUptimeTab) {
-          setActiveUptimeTab(data[0].categoryName);
-        }
-      } else {
-        showError(message);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setUptimeLoading(false);
-    }
-  }, [activeUptimeTab]);
-
   const loadUserQuotaData = useCallback(async () => {
     if (!isAdminUser) return [];
     try {
@@ -245,10 +218,8 @@ export const useDashboardData = (userState, userDispatch, statusState) => {
   }, [userDispatch]);
 
   const refresh = useCallback(async () => {
-    const data = await loadQuotaData();
-    await loadUptimeData();
-    return data;
-  }, [loadQuotaData, loadUptimeData]);
+    return loadQuotaData();
+  }, [loadQuotaData]);
 
   const handleSearchConfirm = useCallback(
     async (updateChartDataCallback) => {
@@ -309,12 +280,6 @@ export const useDashboardData = (userState, userDispatch, statusState) => {
     trendData,
     setTrendData,
 
-    // Uptime 数据
-    uptimeData,
-    uptimeLoading,
-    activeUptimeTab,
-    setActiveUptimeTab,
-
     // 计算值
     timeOptions,
     performanceMetrics,
@@ -325,7 +290,6 @@ export const useDashboardData = (userState, userDispatch, statusState) => {
     apiInfoEnabled,
     announcementsEnabled,
     faqEnabled,
-    uptimeEnabled,
 
     // 函数
     handleInputChange,
@@ -333,7 +297,6 @@ export const useDashboardData = (userState, userDispatch, statusState) => {
     handleCloseModal,
     loadQuotaData,
     loadUserQuotaData,
-    loadUptimeData,
     getUserData,
     refresh,
     handleSearchConfirm,

@@ -18,7 +18,13 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { lazy, Suspense, useContext, useMemo } from 'react';
-import { Route, Routes, useLocation, useParams } from 'react-router-dom';
+import {
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useParams,
+} from 'react-router-dom';
 import Loading from './components/common/ui/Loading';
 import User from './pages/User';
 import { AuthRedirect, PrivateRoute, AdminRoute } from './helpers';
@@ -53,6 +59,7 @@ import SetupCheck from './components/layout/SetupCheck';
 const Home = lazy(() => import('./pages/Home'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const About = lazy(() => import('./pages/About'));
+const Health = lazy(() => import('./pages/Health'));
 const UserAgreement = lazy(() => import('./pages/UserAgreement'));
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
 
@@ -85,6 +92,34 @@ function App() {
       }
     }
     return false; // 默认不需要登录
+  }, [statusState?.status?.HeaderNavModules]);
+
+  const healthRequireAuth = useMemo(() => {
+    const headerNavModulesConfig = statusState?.status?.HeaderNavModules;
+    if (!headerNavModulesConfig) return false;
+    try {
+      const modules = JSON.parse(headerNavModulesConfig);
+      return typeof modules.health === 'object'
+        ? modules.health.requireAuth === true
+        : false;
+    } catch (error) {
+      console.error('解析顶栏模块配置失败:', error);
+      return false;
+    }
+  }, [statusState?.status?.HeaderNavModules]);
+
+  const healthEnabled = useMemo(() => {
+    const headerNavModulesConfig = statusState?.status?.HeaderNavModules;
+    if (!headerNavModulesConfig) return false;
+    try {
+      const modules = JSON.parse(headerNavModulesConfig);
+      return typeof modules.health === 'object'
+        ? modules.health.enabled === true
+        : modules.health === true;
+    } catch (error) {
+      console.error('解析顶栏模块配置失败:', error);
+      return false;
+    }
   }, [statusState?.status?.HeaderNavModules]);
 
   return (
@@ -330,6 +365,29 @@ function App() {
             ) : (
               <Suspense fallback={<Loading></Loading>} key={location.pathname}>
                 <Pricing />
+              </Suspense>
+            )
+          }
+        />
+        <Route
+          path='/health'
+          element={
+            statusState?.status === undefined ? (
+              <Loading />
+            ) : !healthEnabled ? (
+              <Navigate to='/' replace />
+            ) : healthRequireAuth ? (
+              <PrivateRoute>
+                <Suspense
+                  fallback={<Loading></Loading>}
+                  key={location.pathname}
+                >
+                  <Health />
+                </Suspense>
+              </PrivateRoute>
+            ) : (
+              <Suspense fallback={<Loading></Loading>} key={location.pathname}>
+                <Health />
               </Suspense>
             )
           }

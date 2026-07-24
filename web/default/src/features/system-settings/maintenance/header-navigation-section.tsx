@@ -55,6 +55,8 @@ const headerNavSchema = z.object({
   pricingRequireAuth: z.boolean(),
   rankingsEnabled: z.boolean(),
   rankingsRequireAuth: z.boolean(),
+  healthEnabled: z.boolean(),
+  healthRequireAuth: z.boolean(),
   docs: z.boolean(),
   about: z.boolean(),
 })
@@ -89,6 +91,14 @@ const toFormValues = (config: HeaderNavModulesConfig): HeaderNavFormValues => ({
     config.rankings?.requireAuth === undefined
       ? HEADER_NAV_DEFAULT.rankings.requireAuth
       : Boolean(config.rankings.requireAuth),
+  healthEnabled:
+    config.health?.enabled === undefined
+      ? HEADER_NAV_DEFAULT.health.enabled
+      : Boolean(config.health.enabled),
+  healthRequireAuth:
+    config.health?.requireAuth === undefined
+      ? HEADER_NAV_DEFAULT.health.requireAuth
+      : Boolean(config.health.requireAuth),
   docs:
     config.docs === undefined ? HEADER_NAV_DEFAULT.docs : Boolean(config.docs),
   about:
@@ -130,6 +140,11 @@ export function HeaderNavigationSection({
         ...(config.rankings ?? HEADER_NAV_DEFAULT.rankings),
         enabled: values.rankingsEnabled,
         requireAuth: values.rankingsRequireAuth,
+      },
+      health: {
+        ...(config.health ?? HEADER_NAV_DEFAULT.health),
+        enabled: values.healthEnabled,
+        requireAuth: values.healthRequireAuth,
       },
     }
 
@@ -178,7 +193,7 @@ export function HeaderNavigationSection({
   const accessModules: Array<{
     enabledKey: keyof HeaderNavFormValues
     requireAuthKey: keyof HeaderNavFormValues
-    requireAuthDependsOn: 'pricingEnabled' | 'rankingsEnabled'
+    requireAuthDependsOn: 'pricingEnabled' | 'rankingsEnabled' | 'healthEnabled'
     title: string
     description: string
     requireAuthTitle: string
@@ -204,6 +219,17 @@ export function HeaderNavigationSection({
       requireAuthTitle: t('Require login to view rankings'),
       requireAuthDescription: t(
         'Visitors must authenticate before accessing the rankings page.'
+      ),
+    },
+    {
+      enabledKey: 'healthEnabled',
+      requireAuthKey: 'healthRequireAuth',
+      requireAuthDependsOn: 'healthEnabled',
+      title: t('Health status'),
+      description: t('Public model availability and performance page.'),
+      requireAuthTitle: t('Require login to view health status'),
+      requireAuthDescription: t(
+        'Visitors must authenticate before accessing the model health page.'
       ),
     },
   ]

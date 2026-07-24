@@ -29,13 +29,22 @@ type StreamErrorEntry struct {
 }
 
 type StreamStatus struct {
-	EndReason  StreamEndReason
-	EndError   error
-	endOnce    sync.Once
+	EndReason        StreamEndReason
+	EndError         error
+	SSELimitExceeded bool
+	endOnce          sync.Once
 
 	mu         sync.Mutex
 	Errors     []StreamErrorEntry
 	ErrorCount int
+}
+
+func (s *StreamStatus) MarkSSELimitExceeded(err error) {
+	if s == nil {
+		return
+	}
+	s.SSELimitExceeded = true
+	s.SetEndReason(StreamEndReasonScannerErr, err)
 }
 
 func NewStreamStatus() *StreamStatus {

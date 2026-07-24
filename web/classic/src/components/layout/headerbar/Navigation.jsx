@@ -27,6 +27,7 @@ const Navigation = ({
   isLoading,
   userState,
   pricingRequireAuth,
+  healthRequireAuth,
 }) => {
   const renderNavLinks = () => {
     const baseClasses =
@@ -58,6 +59,9 @@ const Navigation = ({
         targetPath = '/login';
       }
       if (link.itemKey === 'pricing' && pricingRequireAuth && !userState.user) {
+        targetPath = '/login';
+      }
+      if (link.itemKey === 'health' && healthRequireAuth && !userState.user) {
         targetPath = '/login';
       }
 

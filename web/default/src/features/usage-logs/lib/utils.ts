@@ -36,9 +36,13 @@ import type {
   GetLogsParams,
   GetLogsResponse,
   FetchLogsConfig,
+  GetLogStatsParams,
   GetMidjourneyLogsParams,
   GetTaskLogsParams,
 } from '../types'
+import { buildTimeRangeParams } from './time-range'
+
+export { getDefaultTimeRange } from './time-range'
 
 // ============================================================================
 // Type Checkers & Utilities
@@ -70,71 +74,6 @@ export function getLogTypeConfig(type: number) {
  */
 export function isPerCallBilling(modelPrice?: number): boolean {
   return (modelPrice ?? 0) > 0
-}
-
-/**
- * Get default time range (today 00:00:00 to now + 1 hour)
- */
-export function getDefaultTimeRange(): { start: Date; end: Date } {
-  const now = new Date()
-  const start = new Date(now)
-  start.setHours(0, 0, 0, 0)
-  const end = new Date(now.getTime() + 3600 * 1000) // +1 hour
-
-  return { start, end }
-}
-
-/**
- * Convert milliseconds timestamp to seconds for API
- */
-function timestampToSeconds(ms: number): number {
-  return Math.floor(ms / 1000)
-}
-
-/**
- * Build query parameters from filters
- */
-export function buildQueryParams(
-  params: Record<string, unknown>
-): URLSearchParams {
-  const queryParams = new URLSearchParams()
-
-  Object.entries(params).forEach(([key, value]) => {
-    // Keep 0 as a valid value, only filter out undefined, null, and empty string
-    if (value !== undefined && value !== null && value !== '') {
-      queryParams.append(key, String(value))
-    }
-  })
-
-  return queryParams
-}
-
-/**
- * Build time range parameters with default values
- * Shared logic for all log types
- */
-function buildTimeRangeParams(
-  searchParams: Record<string, unknown>,
-  useMilliseconds: boolean
-): { start_timestamp?: number; end_timestamp?: number } {
-  const hasTimeParams = searchParams.startTime ?? searchParams.endTime
-  const defaultTimeRange = !hasTimeParams ? getDefaultTimeRange() : null
-
-  const convertTimestamp = (timestamp: number) =>
-    useMilliseconds ? timestamp : timestampToSeconds(timestamp)
-
-  const getTimestamp = (paramTime?: unknown, defaultTime?: Date) => {
-    const time = (paramTime as number) || defaultTime?.getTime()
-    return time ? convertTimestamp(time) : undefined
-  }
-
-  return {
-    start_timestamp: getTimestamp(
-      searchParams.startTime,
-      defaultTimeRange?.start
-    ),
-    end_timestamp: getTimestamp(searchParams.endTime, defaultTimeRange?.end),
-  }
 }
 
 /**
@@ -174,10 +113,9 @@ export function buildApiParams(config: {
   page: number
   pageSize: number
   searchParams: Record<string, unknown>
-  columnFilters?: Array<{ id: string; value: unknown }>
   isAdmin: boolean
 }): GetLogsParams {
-  const { page, pageSize, searchParams, columnFilters = [], isAdmin } = config
+  const { page, pageSize, searchParams, isAdmin } = config
 
   // Helper to process type parameter (single value from array)
   const processType = (value: unknown): number | undefined => {
@@ -218,35 +156,59 @@ export function buildApiParams(config: {
     ...buildTimeRangeParams(searchParams, false),
   }
 
-  // Override with column filters if present
-  if (columnFilters.length > 0) {
-    columnFilters.forEach(({ id, value }) => {
-      if (value === undefined || value === null || value === '') return
+  return params
+}
 
-      switch (id) {
-        case 'type':
-          params.type = processType(value)
-          break
-        case 'model_name':
-          params.model_name = String(value)
-          break
-        case 'token_name':
-          params.token_name = String(value)
-          break
-        case 'group':
-          params.group = String(value)
-          break
-        case 'channel':
-          if (isAdmin) params.channel = Number(value) || 0
-          break
-        case 'username':
-          if (isAdmin) params.username = String(value)
-          break
-      }
+export function buildLogStatsParams(
+  searchParams: Record<string, unknown>,
+  isAdmin: boolean
+): GetLogStatsParams {
+  const params = buildApiParams({
+    page: 1,
+    pageSize: 1,
+    searchParams,
+    isAdmin,
+  })
+  delete params.p
+  delete params.page_size
+  return params
+}
+
+export type LogsRequestParams =
+  | GetLogsParams
+  | GetMidjourneyLogsParams
+  | GetTaskLogsParams
+
+export function buildLogsRequestParams(
+  config: FetchLogsConfig
+): LogsRequestParams {
+  if (config.logCategory === 'common') {
+    return buildApiParams({
+      page: config.page,
+      pageSize: config.pageSize,
+      searchParams: config.searchParams,
+      isAdmin: config.isAdmin,
     })
   }
 
-  return params
+  const baseParams = buildBaseParams({
+    page: config.page,
+    pageSize: config.pageSize,
+    searchParams: config.searchParams,
+    useMilliseconds: config.logCategory === 'drawing',
+  })
+
+  if (config.logCategory === 'drawing') {
+    return {
+      ...baseParams,
+      mj_id: config.searchParams.filter as string | undefined,
+    }
+  }
+
+  return {
+    ...baseParams,
+    task_id: config.searchParams.filter as string | undefined,
+  }
 }
 
 // ============================================================================
@@ -259,46 +221,24 @@ export function buildApiParams(config: {
 export async function fetchLogsByCategory(
   config: FetchLogsConfig
 ): Promise<GetLogsResponse> {
-  const { logCategory, isAdmin, page, pageSize, searchParams, columnFilters } =
-    config
+  const params = buildLogsRequestParams(config)
 
-  if (logCategory === 'common') {
-    const params = buildApiParams({
-      page,
-      pageSize,
-      searchParams,
-      columnFilters,
-      isAdmin,
-    })
-    return isAdmin ? await getAllLogs(params) : await getUserLogs(params)
+  if (config.logCategory === 'common') {
+    const commonParams = params as GetLogsParams
+    return config.isAdmin
+      ? await getAllLogs(commonParams)
+      : await getUserLogs(commonParams)
   }
 
-  // For drawing and task logs
-  const baseParams = buildBaseParams({
-    page,
-    pageSize,
-    searchParams,
-    useMilliseconds: logCategory === 'drawing',
-  })
-
-  const paramsWithFilter = {
-    ...baseParams,
-    ...(logCategory === 'drawing'
-      ? { mj_id: searchParams.filter as string | undefined }
-      : {}),
-    ...(logCategory === 'task'
-      ? { task_id: searchParams.filter as string | undefined }
-      : {}),
+  if (config.logCategory === 'drawing') {
+    const drawingParams = params as GetMidjourneyLogsParams
+    return config.isAdmin
+      ? await getAllMidjourneyLogs(drawingParams)
+      : await getUserMidjourneyLogs(drawingParams)
   }
 
-  if (logCategory === 'drawing') {
-    return isAdmin
-      ? await getAllMidjourneyLogs(paramsWithFilter as GetMidjourneyLogsParams)
-      : await getUserMidjourneyLogs(paramsWithFilter as GetMidjourneyLogsParams)
-  }
-
-  // task logs
-  return isAdmin
-    ? await getAllTaskLogs(paramsWithFilter as GetTaskLogsParams)
-    : await getUserTaskLogs(paramsWithFilter as GetTaskLogsParams)
+  const taskParams = params as GetTaskLogsParams
+  return config.isAdmin
+    ? await getAllTaskLogs(taskParams)
+    : await getUserTaskLogs(taskParams)
 }

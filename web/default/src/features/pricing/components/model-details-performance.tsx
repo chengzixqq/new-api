@@ -36,7 +36,12 @@ import {
 import type { PerformanceGroup } from '@/features/performance-metrics/types'
 import { cn } from '@/lib/utils'
 
-import { type UptimeDayPoint } from '../lib/mock-stats'
+import type { UptimeDayPoint } from '../lib/mock-stats'
+import {
+  aggregateModelPerformance,
+  buildModelLatencySeries,
+  buildModelUptimeSeries,
+} from '../lib/model-performance-aggregation'
 import type { PricingModel } from '../types'
 import { LatencyTrendChart, UptimeTrendChart } from './model-details-charts'
 import { UptimeSparkline } from './model-details-uptime-sparkline'
@@ -86,58 +91,6 @@ function toUptimePct(value: number): number {
   return Math.round(clamped * 100) / 100
 }
 
-function toLatencySeries(groups: PerformanceGroup[]) {
-  const byTs = new Map<number, number[]>()
-  for (const group of groups) {
-    for (const point of group.series) {
-      if (point.avg_ttft_ms <= 0) continue
-      const current = byTs.get(point.ts) ?? []
-      current.push(point.avg_ttft_ms)
-      byTs.set(point.ts, current)
-    }
-  }
-
-  return Array.from(byTs.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([ts, values]) => ({
-      timestamp: new Date(ts * 1000).toISOString(),
-      group: 'latency',
-      ttft_ms: Math.round(
-        values.reduce((sum, value) => sum + value, 0) / values.length
-      ),
-    }))
-}
-
-function toUptimeSeries(groups: PerformanceGroup[]): UptimeDayPoint[] {
-  const byTs = new Map<number, { rates: number[]; incidents: number }>()
-  for (const group of groups) {
-    for (const point of group.series) {
-      const current = byTs.get(point.ts) ?? { rates: [], incidents: 0 }
-      if (Number.isFinite(point.success_rate)) {
-        const successRate = toUptimePct(point.success_rate)
-        current.rates.push(successRate)
-        if (successRate < 100) current.incidents += 1
-      }
-      byTs.set(point.ts, current)
-    }
-  }
-  return Array.from(byTs.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([ts, value]) => {
-      const uptime =
-        value.rates.length > 0
-          ? value.rates.reduce((sum, rate) => sum + rate, 0) /
-            value.rates.length
-          : 0
-      return {
-        date: new Date(ts * 1000).toISOString(),
-        uptime_pct: toUptimePct(uptime),
-        incidents: value.incidents,
-        outage_minutes: 0,
-      }
-    })
-}
-
 function toGroupUptimeSeries(group: PerformanceGroup): UptimeDayPoint[] {
   return group.series.map((point) => {
     const successRate = toUptimePct(point.success_rate)
@@ -148,17 +101,6 @@ function toGroupUptimeSeries(group: PerformanceGroup): UptimeDayPoint[] {
       outage_minutes: 0,
     }
   })
-}
-
-function average(
-  rows: PerformanceRow[],
-  field: 'avg_ttft_ms' | 'avg_latency_ms'
-) {
-  const values = rows.map((row) => row[field]).filter((value) => value > 0)
-  if (values.length === 0) return 0
-  return Math.round(
-    values.reduce((sum, value) => sum + value, 0) / values.length
-  )
 }
 
 export function ModelDetailsPerformance(props: { model: PricingModel }) {
@@ -183,8 +125,8 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
       })),
     [groups]
   )
-  const latencySeries = useMemo(() => toLatencySeries(groups), [groups])
-  const uptimeSeries = useMemo(() => toUptimeSeries(groups), [groups])
+  const latencySeries = useMemo(() => buildModelLatencySeries(groups), [groups])
+  const uptimeSeries = useMemo(() => buildModelUptimeSeries(groups), [groups])
   const uptimeByGroup = useMemo<Record<string, UptimeDayPoint[]>>(() => {
     const map: Record<string, UptimeDayPoint[]> = {}
     for (const group of groups) {
@@ -201,22 +143,7 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
     )
   }
 
-  const tpsValues = performances
-    .map((p) => p.avg_tps)
-    .filter((value) => value > 0)
-  const avgTps =
-    tpsValues.length > 0
-      ? tpsValues.reduce((sum, value) => sum + value, 0) / tpsValues.length
-      : 0
-  const avgLatency = average(performances, 'avg_latency_ms')
-  const successRates = performances
-    .map((perf) => perf.success_rate)
-    .filter((value) => Number.isFinite(value))
-  const successRate =
-    successRates.length > 0
-      ? successRates.reduce((sum, value) => sum + value, 0) /
-        successRates.length
-      : 0
+  const aggregate = aggregateModelPerformance(groups)
   const incidentCount = uptimeSeries.reduce((s, p) => s + p.incidents, 0)
 
   return (
@@ -225,18 +152,18 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
         <StatCard
           icon={Timer}
           label='TPS'
-          value={formatThroughput(avgTps)}
+          value={formatThroughput(aggregate.avgTps)}
           hint={t('Sustained tokens per second')}
         />
         <StatCard
           icon={Timer}
           label={t('Average latency')}
-          value={formatLatency(avgLatency)}
+          value={formatLatency(aggregate.avgLatencyMs)}
         />
         <StatCard
           icon={HeartPulse}
           label={t('Success rate')}
-          value={formatUptimePct(successRate)}
+          value={formatUptimePct(aggregate.successRate)}
           hint={
             incidentCount > 0
               ? t('{{count}} incidents in the last 24 hours', {
@@ -244,7 +171,7 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
                 })
               : t('No incidents in the last 24 hours')
           }
-          valueClassName={getSuccessRateTextClass(successRate)}
+          valueClassName={getSuccessRateTextClass(aggregate.successRate)}
         />
       </div>
 

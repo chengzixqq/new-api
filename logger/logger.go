@@ -7,7 +7,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -26,9 +28,9 @@ const (
 
 const maxLogCount = 1000000
 
-var logCount int
+var logCount atomic.Int64
 var setupLogLock sync.Mutex
-var setupLogWorking bool
+var setupLogWorking atomic.Bool
 var currentLogPath string
 var currentLogPathMu sync.RWMutex
 var currentLogFile *os.File
@@ -39,23 +41,26 @@ func GetCurrentLogPath() string {
 	return currentLogPath
 }
 
-func SetupLogger() {
-	defer func() {
-		setupLogWorking = false
-	}()
+func SetupLogger() error {
 	if *common.LogDir != "" {
 		ok := setupLogLock.TryLock()
 		if !ok {
 			log.Println("setup log is already working")
-			return
+			return nil
 		}
 		defer func() {
 			setupLogLock.Unlock()
 		}()
 		logPath := filepath.Join(*common.LogDir, fmt.Sprintf("oneapi-%s.log", time.Now().Format("20060102150405")))
-		fd, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		fd, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 		if err != nil {
-			log.Fatal("failed to open log file")
+			return fmt.Errorf("open log file %q: %w", logPath, err)
+		}
+		if runtime.GOOS != "windows" {
+			if err := fd.Chmod(0600); err != nil {
+				_ = fd.Close()
+				return fmt.Errorf("restrict log file permissions: %w", err)
+			}
 		}
 		currentLogPathMu.Lock()
 		oldFile := currentLogFile
@@ -70,6 +75,14 @@ func SetupLogger() {
 			_ = oldFile.Close()
 		}
 		common.LogWriterMu.Unlock()
+	}
+	return nil
+}
+
+func runLogRotation() {
+	defer setupLogWorking.Store(false)
+	if err := SetupLogger(); err != nil {
+		log.Printf("failed to rotate log file: %v", err)
 	}
 }
 
@@ -109,13 +122,9 @@ func logHelper(ctx context.Context, level string, msg string) {
 	}
 	_, _ = fmt.Fprintf(writer, "[%s] %v | %s | %s \n", level, now.Format("2006/01/02 - 15:04:05"), id, msg)
 	common.LogWriterMu.RUnlock()
-	logCount++ // we don't need accurate count, so no lock here
-	if logCount > maxLogCount && !setupLogWorking {
-		logCount = 0
-		setupLogWorking = true
-		gopool.Go(func() {
-			SetupLogger()
-		})
+	if logCount.Add(1) > maxLogCount && setupLogWorking.CompareAndSwap(false, true) {
+		logCount.Store(0)
+		gopool.Go(runLogRotation)
 	}
 }
 

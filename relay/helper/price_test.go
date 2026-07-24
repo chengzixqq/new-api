@@ -497,3 +497,114 @@ func TestApplyTokenPriceOverridesIncludesMinimumFeeInPreConsume(t *testing.T) {
 	require.NoError(t, applyTokenPriceOverrides(&priceData, 1, 0))
 	require.Equal(t, 1234, priceData.QuotaToPreConsume)
 }
+
+func TestHandleGroupRatioUserOverrideWinsMembershipGroupRule(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	info := &relaycommon.RelayInfo{
+		UserGroup:       "vip",
+		UsingGroup:      "edit_this",
+		OriginModelName: "group-ratio-user-override-test",
+		UserGroupRatioOverrides: map[string]float64{
+			"edit_this": 0.75,
+		},
+	}
+
+	ratioInfo := HandleGroupRatio(ctx, info)
+
+	require.True(t, ratioInfo.HasSpecialRatio)
+	require.Equal(t, 0.9, ratioInfo.GroupSpecialRatio)
+	require.True(t, ratioInfo.HasUserGroupRatioOverride)
+	require.Equal(t, 0.75, ratioInfo.UserGroupRatioOverride)
+	require.Equal(t, 0.75, ratioInfo.GroupRatio)
+	require.Equal(t, types.GroupRatioSourceUserOverride, ratioInfo.GroupRatioSource)
+}
+
+func TestHandleGroupRatioUsesFinalAutoGroupForUserOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("auto_group", "discount")
+	info := &relaycommon.RelayInfo{
+		UsingGroup:      "auto",
+		OriginModelName: "group-ratio-auto-user-override-test",
+		UserGroupRatioOverrides: map[string]float64{
+			"discount": 0.6,
+		},
+	}
+
+	ratioInfo := HandleGroupRatio(ctx, info)
+
+	require.Equal(t, "discount", info.UsingGroup)
+	require.Equal(t, 0.6, ratioInfo.GroupRatio)
+	require.Equal(t, types.GroupRatioSourceUserOverride, ratioInfo.GroupRatioSource)
+}
+
+func TestHandleGroupRatioUserOverrideWinsModelGroupRatio(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	helperSeedGroupPricingModel(t,
+		"group-ratio-model-override-test",
+		map[string]float64{"group-ratio-model-override-test": 2},
+		`{"c":0.5}`,
+		[]string{"c"},
+	)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	info := &relaycommon.RelayInfo{
+		UsingGroup:      "c",
+		OriginModelName: "group-ratio-model-override-test",
+		UserGroupRatioOverrides: map[string]float64{
+			"c": 0.75,
+		},
+	}
+
+	ratioInfo := HandleGroupRatio(ctx, info)
+
+	require.True(t, ratioInfo.HasUserGroupRatioOverride)
+	require.True(t, ratioInfo.HasModelGroupRatio)
+	require.Equal(t, 0.5, ratioInfo.ModelGroupRatio)
+	require.Equal(t, 0.75, ratioInfo.UserGroupRatioOverride)
+	require.Equal(t, 0.75, ratioInfo.GroupRatio)
+	require.Equal(t, types.GroupRatioSourceUserOverride, ratioInfo.GroupRatioSource)
+}
+
+func TestModelPriceHelperChargesWithUserOverrideAboveModelGroupRatio(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	helperSeedGroupPricingModel(t,
+		"group-ratio-user-priority-billing-test",
+		map[string]float64{"group-ratio-user-priority-billing-test": 2},
+		`{"c":0.5}`,
+		[]string{"c"},
+	)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	info := &relaycommon.RelayInfo{
+		UsingGroup:      "c",
+		OriginModelName: "group-ratio-user-priority-billing-test",
+		UserGroupRatioOverrides: map[string]float64{
+			"c": 0.75,
+		},
+	}
+
+	priceData, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+
+	require.NoError(t, err)
+	require.Equal(t, 1500, priceData.QuotaToPreConsume)
+	require.Equal(t, 0.75, priceData.GroupRatioInfo.GroupRatio)
+	require.Equal(t, types.GroupRatioSourceUserOverride, priceData.GroupRatioInfo.GroupRatioSource)
+}
+
+func TestHandleGroupRatioIgnoresInvalidCachedUserOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	info := &relaycommon.RelayInfo{
+		UsingGroup:      "default",
+		OriginModelName: "invalid-user-group-ratio-override-test",
+		UserGroupRatioOverrides: map[string]float64{
+			"default": 1000.01,
+		},
+	}
+
+	ratioInfo := HandleGroupRatio(ctx, info)
+
+	require.False(t, ratioInfo.HasUserGroupRatioOverride)
+	require.Equal(t, ratio_setting.GetGroupRatio("default"), ratioInfo.GroupRatio)
+	require.Equal(t, types.GroupRatioSourceGroup, ratioInfo.GroupRatioSource)
+}

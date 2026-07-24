@@ -28,11 +28,20 @@ type SearchRecord = Record<string, unknown>
 // Page size persists globally under the classic theme's key (raw number
 // string), so the choice is remembered and carries over from classic.
 const PAGE_SIZE_STORAGE_KEY = 'page-size'
+const MAX_PAGE_SIZE = 100
+
+function normalizePageSize(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(value)))
+}
 
 function getStoredPageSize(): number | undefined {
   try {
-    const n = parseInt(localStorage.getItem(PAGE_SIZE_STORAGE_KEY) ?? '', 10)
-    return n > 0 ? n : undefined // n > 0 also rejects NaN
+    const n = Number.parseInt(
+      localStorage.getItem(PAGE_SIZE_STORAGE_KEY) ?? '',
+      10
+    )
+    return n > 0 ? normalizePageSize(n, 1) : undefined // n > 0 also rejects NaN
   } catch {
     return undefined
   }
@@ -158,18 +167,22 @@ export function useTableUrlState(
   const pagination: PaginationState = useMemo(() => {
     const rawPage = (search as SearchRecord)[pageKey]
     const rawPageSize = (search as SearchRecord)[pageSizeKey]
-    const pageNum = typeof rawPage === 'number' ? rawPage : defaultPage
-    const pageSizeNum =
+    const pageNum =
+      typeof rawPage === 'number' && Number.isFinite(rawPage)
+        ? Math.max(1, Math.trunc(rawPage))
+        : defaultPage
+    const rawPageSizeNum =
       typeof rawPageSize === 'number'
         ? rawPageSize
         : (getStoredPageSize() ?? defaultPageSize)
+    const pageSizeNum = normalizePageSize(rawPageSizeNum, defaultPageSize)
     return { pageIndex: Math.max(0, pageNum - 1), pageSize: pageSizeNum }
   }, [search, pageKey, pageSizeKey, defaultPage, defaultPageSize])
 
   const onPaginationChange: OnChangeFn<PaginationState> = (updater) => {
     const next = typeof updater === 'function' ? updater(pagination) : updater
-    const nextPage = next.pageIndex + 1
-    const nextPageSize = next.pageSize
+    const nextPage = Math.max(1, Math.trunc(next.pageIndex) + 1)
+    const nextPageSize = normalizePageSize(next.pageSize, defaultPageSize)
     if (nextPageSize !== pagination.pageSize) setStoredPageSize(nextPageSize)
     navigate({
       search: (prev) => ({
@@ -221,9 +234,8 @@ export function useTableUrlState(
         patch[cfg.searchKey] =
           value.trim() !== '' ? serialize(value) : undefined
       } else {
-        const value = Array.isArray(found?.value)
-          ? (found!.value as unknown[])
-          : []
+        const foundValue = found?.value
+        const value = Array.isArray(foundValue) ? foundValue : []
         patch[cfg.searchKey] = value.length > 0 ? serialize(value) : undefined
       }
     }

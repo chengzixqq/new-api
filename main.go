@@ -6,7 +6,6 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,13 +30,10 @@ import (
 	_ "github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
-	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
-
-	_ "net/http/pprof"
 )
 
 //go:embed web/default/dist
@@ -58,6 +54,16 @@ func main() {
 	err := InitResources()
 	if err != nil {
 		common.FatalLog("failed to initialize resources: " + err.Error())
+		return
+	}
+	httpServerConfig, err := common.LoadHTTPServerConfig()
+	if err != nil {
+		common.FatalLog("invalid HTTP server configuration: " + err.Error())
+		return
+	}
+	httpServerAddress, port, err := common.LoadHTTPServerAddress(*common.Port)
+	if err != nil {
+		common.FatalLog("invalid HTTP server address: " + err.Error())
 		return
 	}
 
@@ -106,7 +112,6 @@ func main() {
 	// endpoint inference can read cached route settings on first request.
 	model.GetPricing()
 	service.StartUpstreamWarmupTask()
-	service.StartPoolStatusTask()
 
 	// 热更新配置
 	go model.SyncOptions(common.SyncFrequency)
@@ -116,6 +121,7 @@ func main() {
 
 	// 数据看板
 	go model.UpdateQuotaData()
+	logRollupWorker := service.StartLogRollupWorker(context.Background())
 
 	if os.Getenv("CHANNEL_UPDATE_FREQUENCY") != "" {
 		frequency, err := strconv.Atoi(os.Getenv("CHANNEL_UPDATE_FREQUENCY"))
@@ -160,12 +166,28 @@ func main() {
 		model.InitBatchUpdater()
 	}
 
+	var pprofServer *http.Server
+	var stopPprofMonitor context.CancelFunc
+	var pprofMonitorDone chan struct{}
 	if os.Getenv("ENABLE_PPROF") == "true" {
-		gopool.Go(func() {
-			log.Println(http.ListenAndServe("0.0.0.0:8005", nil))
-		})
-		go common.Monitor()
-		common.SysLog("pprof enabled")
+		pprofConfig, err := common.LoadPprofConfig()
+		if err != nil {
+			common.FatalLog("invalid pprof configuration: " + err.Error())
+		}
+		pprofServer = common.NewPprofServer(pprofConfig)
+		monitorContext, cancelMonitor := context.WithCancel(context.Background())
+		stopPprofMonitor = cancelMonitor
+		pprofMonitorDone = make(chan struct{})
+		go func() {
+			defer close(pprofMonitorDone)
+			common.Monitor(monitorContext, pprofConfig)
+		}()
+		go func() {
+			if err := pprofServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				common.SysError("pprof server stopped: " + err.Error())
+			}
+		}()
+		common.SysLog("pprof enabled on " + pprofConfig.Address)
 	}
 
 	err = common.StartPyroScope()
@@ -175,7 +197,16 @@ func main() {
 
 	// Initialize HTTP server
 	server := gin.New()
-	server.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
+	trustedProxies, err := common.GetTrustedProxies()
+	if err != nil {
+		common.FatalLog("failed to parse trusted proxies: " + err.Error())
+		return
+	}
+	if err = server.SetTrustedProxies(trustedProxies); err != nil {
+		common.FatalLog("failed to configure trusted proxies: " + err.Error())
+		return
+	}
+	server.Use(gin.CustomRecoveryWithWriter(middleware.CurrentGinErrorWriter(), func(c *gin.Context, err any) {
 		common.SysLog(fmt.Sprintf("panic detected: %v", err))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": gin.H{
@@ -211,15 +242,7 @@ func main() {
 		ClassicBuildFS:   classicBuildFS,
 		ClassicIndexPage: classicIndexPage,
 	})
-	var port = os.Getenv("PORT")
-	if port == "" {
-		port = strconv.Itoa(*common.Port)
-	}
-
-	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: server,
-	}
+	srv := common.NewHTTPServer(httpServerAddress, server, httpServerConfig)
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -235,6 +258,28 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 	common.SysLog(fmt.Sprintf("received signal: %v, shutting down...", sig))
+	logRollupStopContext, cancelLogRollupStop := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := logRollupWorker.Stop(logRollupStopContext); err != nil {
+		common.SysError("log minute rollup worker did not stop cleanly: " + err.Error())
+	}
+	cancelLogRollupStop()
+	if stopPprofMonitor != nil {
+		stopPprofMonitor()
+	}
+	if pprofServer != nil {
+		pprofShutdownContext, cancelPprofShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := pprofServer.Shutdown(pprofShutdownContext); err != nil {
+			common.SysError(fmt.Sprintf("pprof server forced to shutdown: %v", err))
+		}
+		cancelPprofShutdown()
+	}
+	if pprofMonitorDone != nil {
+		select {
+		case <-pprofMonitorDone:
+		case <-time.After(5 * time.Second):
+			common.SysError("pprof CPU monitor did not stop within 5 seconds")
+		}
+	}
 
 	// SSE streams may run for minutes; give them time to finish before forced exit
 	shutdownTimeout := time.Duration(common.GetEnvOrDefault("SHUTDOWN_TIMEOUT_SECONDS", 120)) * time.Second
@@ -308,12 +353,16 @@ func InitResources() error {
 	// 加载环境变量
 	common.InitEnv()
 
-	logger.SetupLogger()
+	if err = logger.SetupLogger(); err != nil {
+		return fmt.Errorf("setup logger: %w", err)
+	}
 
 	// Initialize model settings
 	ratio_setting.InitRatioSettings()
 
-	service.InitHttpClient()
+	if err = service.InitHttpClient(); err != nil {
+		return fmt.Errorf("initialize outbound HTTP clients: %w", err)
+	}
 
 	service.InitTokenEncoders()
 
@@ -332,6 +381,11 @@ func InitResources() error {
 
 	// Initialize options, should after model.InitDB()
 	model.InitOptionMap()
+	if common.IsMasterNode {
+		if err = model.MigrateLegacyModelHealthConfiguration(); err != nil {
+			return fmt.Errorf("migrate legacy model health configuration: %w", err)
+		}
+	}
 
 	// 清理旧的磁盘缓存文件
 	common.CleanupOldCacheFiles()

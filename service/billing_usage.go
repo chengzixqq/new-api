@@ -4,6 +4,10 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+
+	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -22,6 +26,40 @@ func effectiveBillingUsage(usage *dto.Usage) *dto.Usage {
 		return billingUsage
 	}
 	return usage
+}
+
+// conservativeInterruptedStreamUsage prevents an oversized SSE event from
+// turning a partially delivered response into a free request when the upstream
+// did not provide a usable terminal usage frame.
+func conservativeInterruptedStreamUsage(ctx *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) *dto.Usage {
+	if info == nil || !info.SSELimitExceededAfterOutput() {
+		return usage
+	}
+	effective := effectiveBillingUsage(usage)
+	if effective != nil && (effective.PromptTokens > 0 || effective.CompletionTokens > 0 || effective.TotalTokens > 0) {
+		return usage
+	}
+
+	promptTokens := info.GetEstimatePromptTokens()
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	completionTokens := info.ReceivedResponseCount
+	if completionTokens < 1 {
+		completionTokens = 1
+	}
+	logger.LogWarn(ctx, "upstream SSE exceeded the configured event limit after downstream output; settling with conservative observed usage")
+	return &dto.Usage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      promptTokens + completionTokens,
+		PromptTokensDetails: dto.InputTokenDetails{
+			TextTokens: promptTokens,
+		},
+		CompletionTokenDetails: dto.OutputTokenDetails{
+			TextTokens: completionTokens,
+		},
+	}
 }
 
 func usageBillingPathForLog(isLocalCountTokens bool, usage *dto.Usage) string {

@@ -43,14 +43,15 @@ const (
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"
 
 	/* user related keys */
-	ContextKeyUserId      ContextKey = "id"
-	ContextKeyUserSetting ContextKey = "user_setting"
-	ContextKeyUserQuota   ContextKey = "user_quota"
-	ContextKeyUserStatus  ContextKey = "user_status"
-	ContextKeyUserEmail   ContextKey = "user_email"
-	ContextKeyUserGroup   ContextKey = "user_group"
-	ContextKeyUsingGroup  ContextKey = "group"
-	ContextKeyUserName    ContextKey = "username"
+	ContextKeyUserId                  ContextKey = "id"
+	ContextKeyUserSetting             ContextKey = "user_setting"
+	ContextKeyUserQuota               ContextKey = "user_quota"
+	ContextKeyUserStatus              ContextKey = "user_status"
+	ContextKeyUserEmail               ContextKey = "user_email"
+	ContextKeyUserGroup               ContextKey = "user_group"
+	ContextKeyUserGroupRatioOverrides ContextKey = "user_group_ratio_overrides"
+	ContextKeyUsingGroup              ContextKey = "group"
+	ContextKeyUserName                ContextKey = "username"
 
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
 
@@ -71,8 +72,9 @@ const (
 	ContextKeyAdminRejectReason ContextKey = "admin_reject_reason"
 
 	// ContextKeyLanguage stores the user's language preference for i18n
-	ContextKeyLanguage ContextKey = "language"
-	ContextKeyIsStream ContextKey = "is_stream"
+	ContextKeyLanguage    ContextKey = "language"
+	ContextKeyIsStream    ContextKey = "is_stream"
+	ContextKeyHealthProbe ContextKey = "health_probe"
 
 	// ContextKeyAuditLogged marks that the current request has already recorded
 	// a manage/operation audit log inside the handler. When set, the admin-audit

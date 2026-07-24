@@ -39,6 +39,7 @@ export type TopNavLink = {
  *   console: true,
  *   pricing: { enabled: true, requireAuth: false },
  *   rankings: { enabled: true, requireAuth: false },
+ *   health: { enabled: false, requireAuth: false },
  *   docs: true,
  *   about: true
  * }
@@ -84,6 +85,13 @@ export function useTopNavLinks(): TopNavLink[] {
   if (rankings && typeof rankings === 'object' && rankings.enabled) {
     const requiresAuth = rankings.requireAuth && !isAuthed
     links.push({ title: t('Rankings'), href: '/rankings', requiresAuth })
+  }
+
+  // Health
+  const health = modules?.health
+  if (health && typeof health === 'object' && health.enabled) {
+    const requiresAuth = health.requireAuth && !isAuthed
+    links.push({ title: t('Health status'), href: '/health', requiresAuth })
   }
 
   // Docs (supports external links)

@@ -5,9 +5,83 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
+
+// applyPersonalGroupPricingRatios keeps the pricing response aligned with the
+// runtime precedence without mutating model.GetPricing's shared cached maps.
+func applyPersonalGroupPricingRatios(pricing []model.Pricing, userOverrides map[string]float64) []model.Pricing {
+	if len(pricing) == 0 || len(userOverrides) == 0 {
+		return pricing
+	}
+
+	adjusted := make([]model.Pricing, len(pricing))
+	copy(adjusted, pricing)
+	for i := range adjusted {
+		if len(adjusted[i].GroupPricing) == 0 {
+			continue
+		}
+
+		var groupPricingCopy map[string]types.ModelGroupPricing
+		for group, ratio := range userOverrides {
+			groupPricing, exists := adjusted[i].GroupPricing[group]
+			if !exists || !model.IsValidGroupRatioOverride(ratio) {
+				continue
+			}
+			if groupPricingCopy == nil {
+				groupPricingCopy = make(map[string]types.ModelGroupPricing, len(adjusted[i].GroupPricing))
+				for name, value := range adjusted[i].GroupPricing {
+					groupPricingCopy[name] = value
+				}
+			}
+			ratioCopy := ratio
+			groupPricing.Ratio = &ratioCopy
+			if groupPricing.ModelPrice != nil {
+				value := *groupPricing.ModelPrice * ratio
+				groupPricing.ModelPrice = &value
+			}
+			if groupPricing.PromptPrice != nil {
+				value := *groupPricing.PromptPrice * ratio
+				groupPricing.PromptPrice = &value
+			}
+			if groupPricing.CompletionPrice != nil {
+				value := *groupPricing.CompletionPrice * ratio
+				groupPricing.CompletionPrice = &value
+			}
+			if groupPricing.CachePrice != nil {
+				value := *groupPricing.CachePrice * ratio
+				groupPricing.CachePrice = &value
+			}
+			if groupPricing.CreateCachePrice != nil {
+				value := *groupPricing.CreateCachePrice * ratio
+				groupPricing.CreateCachePrice = &value
+			}
+			if groupPricing.ImagePrice != nil {
+				value := *groupPricing.ImagePrice * ratio
+				groupPricing.ImagePrice = &value
+			}
+			if groupPricing.AudioPrice != nil {
+				value := *groupPricing.AudioPrice * ratio
+				groupPricing.AudioPrice = &value
+			}
+			if groupPricing.AudioCompletionPrice != nil {
+				value := *groupPricing.AudioCompletionPrice * ratio
+				groupPricing.AudioCompletionPrice = &value
+			}
+			if groupPricing.MinFee != nil {
+				value := *groupPricing.MinFee * ratio
+				groupPricing.MinFee = &value
+			}
+			groupPricingCopy[group] = groupPricing
+		}
+		if groupPricingCopy != nil {
+			adjusted[i].GroupPricing = groupPricingCopy
+		}
+	}
+	return adjusted
+}
 
 func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string]string) []model.Pricing {
 	if len(pricing) == 0 {
@@ -64,6 +138,7 @@ func GetPricing(c *gin.Context) {
 		groupRatio[s] = f
 	}
 	var group string
+	var userOverrides map[string]float64
 	if exists {
 		user, err := model.GetUserCache(userId.(int))
 		if err == nil {
@@ -74,8 +149,15 @@ func GetPricing(c *gin.Context) {
 					groupRatio[g] = ratio
 				}
 			}
+			userOverrides = user.GetGroupRatioOverrides()
+			for targetGroup, ratio := range userOverrides {
+				if _, ok := groupRatio[targetGroup]; ok {
+					groupRatio[targetGroup] = ratio
+				}
+			}
 		}
 	}
+	pricing = applyPersonalGroupPricingRatios(pricing, userOverrides)
 
 	usableGroup = service.GetUserUsableGroups(group)
 	if exists {

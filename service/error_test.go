@@ -12,8 +12,26 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type trackingReadCloser struct {
+	reader io.Reader
+	read   int64
+	closed bool
+}
+
+func (r *trackingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.read += int64(n)
+	return n, err
+}
+
+func (r *trackingReadCloser) Close() error {
+	r.closed = true
+	return nil
+}
 
 func TestResetStatusCode(t *testing.T) {
 	t.Parallel()
@@ -122,6 +140,25 @@ func TestRelayErrorHandlerKeepsOpenAIErrorMessage(t *testing.T) {
 	require.Equal(t, message, newAPIError.Error())
 }
 
+func TestRelayErrorHandlerBoundsAndClosesUpstreamErrorBody(t *testing.T) {
+	body := &trackingReadCloser{
+		reader: io.MultiReader(
+			strings.NewReader(`{"message":"`),
+			io.LimitReader(strings.NewReader(strings.Repeat("x", int(maxUpstreamErrorBodyBytes*2))), maxUpstreamErrorBodyBytes*2),
+		),
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Body:       body,
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, false)
+
+	require.NotNil(t, newAPIError)
+	require.Equal(t, maxUpstreamErrorBodyBytes, body.read)
+	require.True(t, body.closed)
+}
+
 func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
 	withDebugEnabled(t, true)
 
@@ -148,6 +185,20 @@ func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
 	require.NotNil(t, newAPIError)
 	require.NotContains(t, logBuffer.String(), "[truncated")
 	require.Contains(t, logBuffer.String(), body)
+}
+
+func TestRelayErrorHandlerRedactsHealthProbeResponseBody(t *testing.T) {
+	secretBody := `{"error":{"message":"UPSTREAM_RESPONSE_SECRET"}}`
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Body:       io.NopCloser(strings.NewReader(secretBody)),
+	}
+
+	newAPIError := RelayErrorHandler(common.WithModelHealthProbeContext(context.Background()), resp, true)
+
+	require.NotNil(t, newAPIError)
+	assert.NotContains(t, newAPIError.Error(), "UPSTREAM_RESPONSE_SECRET")
+	assert.Contains(t, newAPIError.Error(), "health probe upstream returned status code 502")
 }
 
 func withDebugEnabled(t *testing.T, enabled bool) {

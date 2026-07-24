@@ -30,7 +30,7 @@ func convertCf2CompletionsRequest(textRequest dto.GeneralOpenAIRequest) *CfReque
 }
 
 func cfStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*types.NewAPIError, *dto.Usage) {
-	scanner := helper.NewStreamScanner(resp.Body)
+	scanner := helper.NewStreamScanner(resp.Body, info)
 	scanner.Split(bufio.ScanLines)
 
 	helper.SetEventStreamHeaders(c)

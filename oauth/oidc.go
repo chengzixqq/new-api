@@ -53,7 +53,7 @@ func (p *OIDCProvider) ExchangeToken(ctx context.Context, code string, c *gin.Co
 		return nil, NewOAuthError(i18n.MsgOAuthInvalidCode, nil)
 	}
 
-	logger.LogDebug(ctx, "[OAuth-OIDC] ExchangeToken: code=%s...", code[:min(len(code), 10)])
+	logger.LogDebug(ctx, "[OAuth-OIDC] ExchangeToken: authorization code received")
 
 	settings := system_setting.GetOIDCSettings()
 	redirectUri := fmt.Sprintf("%s/oauth/oidc", system_setting.ServerAddress)
@@ -145,11 +145,11 @@ func (p *OIDCProvider) GetUserInfo(ctx context.Context, token *OAuthToken) (*OAu
 	}
 
 	if oidcUser.OpenID == "" || oidcUser.Email == "" {
-		logger.LogError(ctx, fmt.Sprintf("[OAuth-OIDC] GetUserInfo failed: empty fields (sub=%s, email=%s)", oidcUser.OpenID, oidcUser.Email))
+		logger.LogError(ctx, "[OAuth-OIDC] GetUserInfo failed: required field missing")
 		return nil, NewOAuthError(i18n.MsgOAuthUserInfoEmpty, map[string]any{"Provider": "OIDC"})
 	}
 
-	logger.LogDebug(ctx, "[OAuth-OIDC] GetUserInfo success: sub=%s, username=%s, name=%s, email=%s", oidcUser.OpenID, oidcUser.PreferredUsername, oidcUser.Name, oidcUser.Email)
+	logger.LogDebug(ctx, "[OAuth-OIDC] GetUserInfo success: sub=%s", oidcUser.OpenID)
 
 	return &OAuthUser{
 		ProviderUserID: oidcUser.OpenID,

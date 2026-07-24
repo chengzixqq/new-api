@@ -945,6 +945,11 @@ func (channel *Channel) ValidateSettings() error {
 			return err
 		}
 	}
+	if channelParams.SSEMaxEventSizeMB != nil &&
+		(*channelParams.SSEMaxEventSizeMB < constant.MinSSEMaxEventSizeMB ||
+			*channelParams.SSEMaxEventSizeMB > constant.MaxSSEMaxEventSizeMB) {
+		return fmt.Errorf("sse_max_event_size_mb must be between %d and %d", constant.MinSSEMaxEventSizeMB, constant.MaxSSEMaxEventSizeMB)
+	}
 	channelOtherSettings := &dto.ChannelOtherSettings{}
 	if channel.OtherSettings != "" {
 		err := common.UnmarshalJsonStr(channel.OtherSettings, channelOtherSettings)
@@ -961,6 +966,33 @@ func (channel *Channel) ValidateSettings() error {
 		if err := channelOtherSettings.AdvancedCustom.Validate(); err != nil {
 			return err
 		}
+	}
+	if channelOtherSettings.TaskPollingConcurrency != nil &&
+		(*channelOtherSettings.TaskPollingConcurrency < dto.MinTaskPollingConcurrency ||
+			*channelOtherSettings.TaskPollingConcurrency > dto.MaxTaskPollingConcurrency) {
+		return fmt.Errorf("task_polling_concurrency must be between %d and %d", dto.MinTaskPollingConcurrency, dto.MaxTaskPollingConcurrency)
+	}
+	if channelOtherSettings.TaskPollingIntervalMs != nil &&
+		(*channelOtherSettings.TaskPollingIntervalMs < dto.MinTaskPollingIntervalMs ||
+			*channelOtherSettings.TaskPollingIntervalMs > dto.MaxTaskPollingIntervalMs) {
+		return fmt.Errorf("task_polling_interval_ms must be between %d and %d", dto.MinTaskPollingIntervalMs, dto.MaxTaskPollingIntervalMs)
+	}
+	if channelOtherSettings.UpstreamHTTPMode != nil {
+		switch *channelOtherSettings.UpstreamHTTPMode {
+		case dto.UpstreamHTTPModeAuto, dto.UpstreamHTTPModeHTTP1, dto.UpstreamHTTPModeHybrid:
+		default:
+			return fmt.Errorf("upstream_http_mode must be one of auto, http1, hybrid")
+		}
+	}
+	if channelOtherSettings.HTTP2ConnectionPoolSize != nil &&
+		(*channelOtherSettings.HTTP2ConnectionPoolSize < dto.MinHTTP2ConnectionPoolSize ||
+			*channelOtherSettings.HTTP2ConnectionPoolSize > dto.MaxHTTP2ConnectionPoolSize) {
+		return fmt.Errorf("http2_connection_pool_size must be between %d and %d", dto.MinHTTP2ConnectionPoolSize, dto.MaxHTTP2ConnectionPoolSize)
+	}
+	if channelOtherSettings.HTTP1BodyThresholdKiB != nil &&
+		(*channelOtherSettings.HTTP1BodyThresholdKiB < dto.MinHTTP1BodyThresholdKiB ||
+			*channelOtherSettings.HTTP1BodyThresholdKiB > dto.MaxHTTP1BodyThresholdKiB) {
+		return fmt.Errorf("http1_body_threshold_kib must be between %d and %d", dto.MinHTTP1BodyThresholdKiB, dto.MaxHTTP1BodyThresholdKiB)
 	}
 	return nil
 }

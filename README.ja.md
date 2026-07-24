@@ -320,7 +320,8 @@ docker run --name new-api -d --restart always \
 | `SQL_DSN** | データベース接続文字列 | - |
 | `REDIS_CONN_STRING` | Redis接続文字列 | - |
 | `STREAMING_TIMEOUT` | ストリーミング応答のタイムアウト時間（秒） | `300` |
-| `STREAM_SCANNER_MAX_BUFFER_MB` | ストリームスキャナの1行あたりバッファ上限（MB）。4K画像など巨大なbase64 `data:` ペイロードを扱う場合は値を増加させてください | `64` |
+| `STREAMING_MAX_BUFFER_SIZE` | 上流 SSE の1イベントあたりの最大サイズ（バイト）。1–128 MiB の範囲の整数 MiB で指定 | `16777216` |
+| `STREAM_SCANNER_MAX_BUFFER_MB` | 旧環境向けの上流 SSE 1イベント最大サイズ互換設定（MiB、1–128） | 未設定 |
 | `MAX_REQUEST_BODY_MB` | リクエストボディ最大サイズ（MB、**解凍後**に計測。巨大リクエスト/zip bomb によるメモリ枯渇を防止）。超過時は `413` | `32` |
 | `AZURE_DEFAULT_API_VERSION` | Azure APIバージョン | `2025-04-01-preview` |
 | `ERROR_LOG_ENABLED` | エラーログスイッチ | `false` |

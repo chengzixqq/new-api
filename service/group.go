@@ -3,6 +3,7 @@ package service
 import (
 	"strings"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
@@ -53,13 +54,16 @@ func GetUserAutoGroup(userGroup string) []string {
 	return autoGroups
 }
 
-// GetUserGroupRatio 获取用户使用某个分组的倍率
+// GetUserGroupRatio 获取用户使用某个分组的倍率。可选的个人覆盖优先于用户分组规则。
 // userGroup 用户分组
 // group 需要获取倍率的分组
-func GetUserGroupRatio(userGroup, group string) float64 {
+func GetUserGroupRatio(userGroup, group string, userOverrides map[string]float64) float64 {
 	ratio, ok := ratio_setting.GetGroupGroupRatio(userGroup, group)
-	if ok {
-		return ratio
+	if !ok {
+		ratio = ratio_setting.GetGroupRatio(group)
 	}
-	return ratio_setting.GetGroupRatio(group)
+	if override, exists := userOverrides[group]; exists && model.IsValidGroupRatioOverride(override) {
+		return override
+	}
+	return ratio
 }

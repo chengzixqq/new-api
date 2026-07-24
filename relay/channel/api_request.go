@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
@@ -309,8 +310,10 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
-	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	if !info.IsHealthProbe {
+		logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -339,8 +342,10 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
-	logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	if !info.IsHealthProbe {
+		logger.LogDebug(c, "fullRequestURL: %s", common.SanitizeURLForLog(fullRequestURL))
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -386,8 +391,12 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		targetHeader.Set(key, value)
 	}
 	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
-	targetConn, _, err := websocket.DefaultDialer.Dial(fullRequestURL, targetHeader)
+	info.MarkChannelAttemptDispatched()
+	targetConn, resp, err := websocket.DefaultDialer.DialContext(c.Request.Context(), fullRequestURL, targetHeader)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		return nil, fmt.Errorf("dial failed to %s: %w", common.SanitizeURLForLog(fullRequestURL), err)
 	}
 	// send request body
@@ -397,7 +406,7 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 }
 
 func startPingKeepAlive(c *gin.Context, pingInterval time.Duration) (context.CancelFunc, <-chan struct{}) {
-	pingerCtx, stopPinger := context.WithCancel(context.Background())
+	pingerCtx, stopPinger := context.WithCancel(c.Request.Context())
 	done := make(chan struct{})
 
 	gopool.Go(func() {
@@ -475,25 +484,33 @@ func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	return doRequest(c, req, info)
 }
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
-	var client *http.Client
-	var err error
-	forceH1 := info.ChannelOtherSettings.ForceHTTP1
+	if req == nil {
+		return nil, errors.New("request is nil")
+	}
+	if c != nil && c.Request != nil && req.Context().Done() == nil {
+		req = req.WithContext(c.Request.Context())
+	}
 
-	if info.ChannelSetting.Proxy != "" {
-		if forceH1 {
-			client, err = service.NewProxyHttpClientHTTP1Only(info.ChannelSetting.Proxy)
-		} else {
-			client, err = service.NewProxyHttpClient(info.ChannelSetting.Proxy)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("new proxy http client failed: %w", err)
-		}
-	} else {
-		if forceH1 {
-			client = service.GetHttpClientHTTP1Only()
-		} else {
-			client = service.GetHttpClient()
-		}
+	if info == nil || info.ChannelMeta == nil {
+		return nil, errors.New("relay channel metadata is missing")
+	}
+	resolvedTransport := model_setting.ResolveUpstreamHTTPConfig(info.ChannelOtherSettings)
+	contentLength := req.ContentLength
+	if contentLength <= 0 && info.UpstreamRequestBodySize > 0 {
+		contentLength = info.UpstreamRequestBodySize
+	}
+	client, transportSelection, err := service.SelectUpstreamHTTPClient(service.UpstreamHTTPClientOptions{
+		ChannelID:               info.ChannelId,
+		ProxyURL:                info.ChannelSetting.Proxy,
+		Mode:                    string(resolvedTransport.Mode),
+		HTTP2PoolSize:           resolvedTransport.HTTP2ConnectionPoolSize,
+		HTTP1BodyThresholdBytes: int64(resolvedTransport.HTTP1BodyThresholdKiB) << 10,
+		Method:                  req.Method,
+		HasBody:                 req.Body != nil && req.Body != http.NoBody,
+		ContentLength:           contentLength,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("select upstream HTTP client failed: %w", err)
 	}
 
 	var stopPinger context.CancelFunc
@@ -519,13 +536,39 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	// Attach segmented upstream timing (no-op unless UPSTREAM_TRACE_ENABLED).
 	// Placed right before client.Do so StartAt marks the dispatch moment.
 	req = common.AttachUpstreamTrace(req, info)
+	if info.UpstreamTrace != nil {
+		info.UpstreamTrace.SetTransportSelection(
+			transportSelection.Mode,
+			transportSelection.HTTP2PoolSize,
+			transportSelection.HTTP2Shard,
+			transportSelection.ShardActiveAtPick,
+			transportSelection.PendingUploadBytesAtPick,
+		)
+	}
+	info.MarkChannelAttemptDispatched()
 	resp, err := client.Do(req)
 	if err != nil {
+		if transportSelection.HTTP2PoolSize == 1 {
+			service.RecordUpstreamHTTP2Error(err)
+		}
+		if c != nil && c.Request != nil {
+			if requestErr := c.Request.Context().Err(); requestErr != nil {
+				logger.LogDebug(c, "upstream request stopped after downstream cancellation: %s", requestErr.Error())
+				return nil, types.NewError(requestErr, types.ErrorCodeDoRequestFailed, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+			}
+		}
+		if info.IsHealthProbe {
+			logger.LogError(c, "health probe upstream request failed")
+			return nil, types.NewError(errors.New("health probe upstream request failed"), types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
+		}
 		logger.LogError(c, "do request failed: "+err.Error())
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
 		return nil, errors.New("resp is nil")
+	}
+	if info.UpstreamTrace != nil {
+		info.UpstreamTrace.SetHTTPProtocol(resp.Proto)
 	}
 
 	if upID := resp.Header.Get(common2.RequestIdKey); upID != "" {
@@ -542,7 +585,7 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}

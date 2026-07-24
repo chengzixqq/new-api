@@ -12,8 +12,8 @@ type PerfMetricsSetting struct {
 var perfMetricsSetting = PerfMetricsSetting{
 	Enabled:       true,
 	FlushInterval: 5,
-	BucketTime:    "hour",
-	RetentionDays: 0,
+	BucketTime:    "5min",
+	RetentionDays: 30,
 }
 
 func init() {

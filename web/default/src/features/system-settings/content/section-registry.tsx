@@ -1,3 +1,7 @@
+import {
+  CONTENT_DEFAULT_SECTION,
+  type CONTENT_SECTION_IDS,
+} from '../section-route-config'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -24,7 +28,7 @@ import { ChatSettingsSection } from './chat-settings-section'
 import { DashboardSection } from './dashboard-section'
 import { DrawingSettingsSection } from './drawing-settings-section'
 import { FAQSection } from './faq-section'
-import { UptimeKumaSection } from './uptime-kuma-section'
+import { ModelHealthSection } from './model-health-section'
 
 /**
  * Validate and coerce DataExportDefaultTime to a safe value
@@ -84,12 +88,54 @@ const CONTENT_SECTIONS = [
     ),
   },
   {
-    id: 'uptime-kuma',
-    titleKey: 'Uptime Kuma',
+    id: 'model-health',
+    titleKey: 'Model health',
     build: (settings: ContentSettings) => (
-      <UptimeKumaSection
-        enabled={settings['console_setting.uptime_kuma_enabled']}
-        data={settings['console_setting.uptime_kuma_groups']}
+      <ModelHealthSection
+        defaultValues={{
+          'model_health_setting.enabled':
+            settings['model_health_setting.enabled'],
+          'model_health_setting.pool_details_enabled':
+            settings['model_health_setting.pool_details_enabled'],
+          'model_health_setting.multi_sample_enabled':
+            settings['model_health_setting.multi_sample_enabled'],
+          'model_health_setting.default_interval_seconds':
+            settings['model_health_setting.default_interval_seconds'],
+          'model_health_setting.default_timeout_seconds':
+            settings['model_health_setting.default_timeout_seconds'],
+          'model_health_setting.default_sampling_mode':
+            settings['model_health_setting.default_sampling_mode'],
+          'model_health_setting.default_samples_per_run':
+            settings['model_health_setting.default_samples_per_run'],
+          'model_health_setting.default_minimum_successes':
+            settings['model_health_setting.default_minimum_successes'],
+          'model_health_setting.default_sample_spacing_seconds':
+            settings['model_health_setting.default_sample_spacing_seconds'],
+          'model_health_setting.concurrency':
+            settings['model_health_setting.concurrency'],
+          'model_health_setting.retention_days':
+            settings['model_health_setting.retention_days'],
+          'model_health_setting.healthy_threshold':
+            settings['model_health_setting.healthy_threshold'],
+          'model_health_setting.fluctuating_threshold':
+            settings['model_health_setting.fluctuating_threshold'],
+          'model_health_setting.passive_min_samples':
+            settings['model_health_setting.passive_min_samples'],
+          'model_health_setting.active_min_samples':
+            settings['model_health_setting.active_min_samples'],
+          'model_health_setting.public_groups':
+            settings['model_health_setting.public_groups'],
+          'model_health_setting.public_models':
+            settings['model_health_setting.public_models'],
+          'perf_metrics_setting.enabled':
+            settings['perf_metrics_setting.enabled'],
+          'perf_metrics_setting.flush_interval':
+            settings['perf_metrics_setting.flush_interval'],
+          'perf_metrics_setting.bucket_time':
+            settings['perf_metrics_setting.bucket_time'],
+          'perf_metrics_setting.retention_days':
+            settings['perf_metrics_setting.retention_days'],
+        }}
       />
     ),
   },
@@ -118,20 +164,22 @@ const CONTENT_SECTIONS = [
   },
 ] as const
 
-export type ContentSectionId = (typeof CONTENT_SECTIONS)[number]['id']
+export type ContentSectionId = (typeof CONTENT_SECTION_IDS)[number]
 
 const contentRegistry = createSectionRegistry<
   ContentSectionId,
   ContentSettings
 >({
   sections: CONTENT_SECTIONS,
-  defaultSection: 'dashboard',
+  defaultSection: CONTENT_DEFAULT_SECTION,
   basePath: '/system-settings/content',
   urlStyle: 'path',
 })
 
-export const CONTENT_SECTION_IDS = contentRegistry.sectionIds
-export const CONTENT_DEFAULT_SECTION = contentRegistry.defaultSection
 export const getContentSectionNavItems = contentRegistry.getSectionNavItems
 export const getContentSectionContent = contentRegistry.getSectionContent
 export const getContentSectionMeta = contentRegistry.getSectionMeta
+export {
+  CONTENT_DEFAULT_SECTION,
+  CONTENT_SECTION_IDS,
+} from '../section-route-config'

@@ -48,6 +48,14 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/api'
@@ -61,6 +69,11 @@ import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { safeNumberFieldProps } from '../utils/numeric-field'
+import {
+  aggregateWarmupHostStatuses,
+  formatWarmupLatency,
+  type WarmupHostStatus,
+} from './upstream-warmup-status'
 
 /**
  * IMPORTANT: react-hook-form 7 interprets dotted `name` strings as nested
@@ -74,6 +87,10 @@ const perfSchema = z.object({
   UpstreamWarmupEnabled: z.boolean(),
   UpstreamTraceEnabled: z.boolean(),
   UpstreamTraceSampleRate: z.coerce.number().min(0).max(1),
+  sse_max_event_size_mb: z.number().int().min(1).max(128).optional(),
+  upstream_http_mode: z.enum(['auto', 'http1', 'hybrid']).optional(),
+  http2_connection_pool_size: z.number().int().min(1).max(64).optional(),
+  http1_body_threshold_kib: z.number().int().min(64).max(65536).optional(),
   performance_setting: z.object({
     disk_cache_enabled: z.boolean(),
     disk_cache_threshold_mb: z.coerce.number().min(1),
@@ -93,6 +110,10 @@ type FlatPerfDefaults = {
   UpstreamWarmupEnabled: boolean
   UpstreamTraceEnabled: boolean
   UpstreamTraceSampleRate: number
+  'global.sse_max_event_size_mb': number | 'null'
+  'global.upstream_http_mode': 'auto' | 'http1' | 'hybrid' | 'null'
+  'global.http2_connection_pool_size': number | 'null'
+  'global.http1_body_threshold_kib': number | 'null'
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number
@@ -107,6 +128,24 @@ const buildFormDefaults = (defaults: FlatPerfDefaults): PerfFormInput => ({
   UpstreamWarmupEnabled: defaults.UpstreamWarmupEnabled ?? true,
   UpstreamTraceEnabled: defaults.UpstreamTraceEnabled ?? false,
   UpstreamTraceSampleRate: defaults.UpstreamTraceSampleRate ?? 1,
+  sse_max_event_size_mb:
+    typeof defaults['global.sse_max_event_size_mb'] === 'number'
+      ? defaults['global.sse_max_event_size_mb']
+      : undefined,
+  upstream_http_mode:
+    defaults['global.upstream_http_mode'] === 'auto' ||
+    defaults['global.upstream_http_mode'] === 'http1' ||
+    defaults['global.upstream_http_mode'] === 'hybrid'
+      ? defaults['global.upstream_http_mode']
+      : undefined,
+  http2_connection_pool_size:
+    typeof defaults['global.http2_connection_pool_size'] === 'number'
+      ? defaults['global.http2_connection_pool_size']
+      : undefined,
+  http1_body_threshold_kib:
+    typeof defaults['global.http1_body_threshold_kib'] === 'number'
+      ? defaults['global.http1_body_threshold_kib']
+      : undefined,
   performance_setting: {
     disk_cache_enabled: defaults['performance_setting.disk_cache_enabled'],
     disk_cache_threshold_mb:
@@ -128,6 +167,14 @@ const normalizeFormValues = (values: PerfFormValues): FlatPerfDefaults => ({
   UpstreamWarmupEnabled: values.UpstreamWarmupEnabled,
   UpstreamTraceEnabled: values.UpstreamTraceEnabled,
   UpstreamTraceSampleRate: values.UpstreamTraceSampleRate,
+  'global.sse_max_event_size_mb':
+    values.sse_max_event_size_mb === undefined
+      ? 'null'
+      : values.sse_max_event_size_mb,
+  'global.upstream_http_mode': values.upstream_http_mode ?? 'null',
+  'global.http2_connection_pool_size':
+    values.http2_connection_pool_size ?? 'null',
+  'global.http1_body_threshold_kib': values.http1_body_threshold_kib ?? 'null',
   'performance_setting.disk_cache_enabled':
     values.performance_setting.disk_cache_enabled,
   'performance_setting.disk_cache_threshold_mb':
@@ -170,22 +217,6 @@ interface Props {
   defaultValues: FlatPerfDefaults
 }
 
-type WarmupHostStatus = {
-  host: string
-  proxy?: string
-  last_status_code: number
-  last_latency_ms: number
-  last_error?: string
-  success_count: number
-  failure_count: number
-  last_success_at?: number
-  last_check_at: number
-  connect_success_count?: number
-  reusable_success_count?: number
-  drain_failure_count?: number
-  last_reusable_at?: number
-}
-
 type PerformanceStats = {
   cache_stats?: {
     current_disk_usage_bytes: number
@@ -216,6 +247,13 @@ type PerformanceStats = {
   }
   config?: {
     is_running_in_container: boolean
+    sse_max_event_size_mb?: number
+    upstream_http_mode?: 'auto' | 'http1' | 'hybrid'
+    http2_connection_pool_size?: number
+    http1_body_threshold_kib?: number
+    upstream_http_mode_source?: string
+    http2_connection_pool_size_source?: string
+    http1_body_threshold_kib_source?: string
   }
 }
 
@@ -225,6 +263,10 @@ export function PerformanceSection(props: Props) {
   const [stats, setStats] = useState<PerformanceStats | null>(null)
   const [warmupStatus, setWarmupStatus] = useState<WarmupHostStatus[]>([])
   const [warmupStatusLoading, setWarmupStatusLoading] = useState(false)
+  const aggregatedWarmupStatus = useMemo(
+    () => aggregateWarmupHostStatuses(warmupStatus),
+    [warmupStatus]
+  )
 
   const formDefaults = useMemo(
     () => buildFormDefaults(props.defaultValues),
@@ -347,6 +389,28 @@ export function PerformanceSection(props: Props) {
   const monitorEnabled = form.watch('performance_setting.monitor_enabled')
   const upstreamWarmupEnabled = form.watch('UpstreamWarmupEnabled')
   const upstreamTraceEnabled = form.watch('UpstreamTraceEnabled')
+  const configuredUpstreamHTTPMode = form.watch('upstream_http_mode')
+  const configuredHTTP2PoolSize = form.watch('http2_connection_pool_size')
+  const configuredHTTP1ThresholdKiB = form.watch('http1_body_threshold_kib')
+  const effectiveUpstreamHTTPMode =
+    configuredUpstreamHTTPMode ?? stats?.config?.upstream_http_mode ?? 'auto'
+  const effectiveHTTP2PoolSize =
+    configuredHTTP2PoolSize ?? stats?.config?.http2_connection_pool_size ?? 1
+  const effectiveHTTP1ThresholdKiB =
+    configuredHTTP1ThresholdKiB ??
+    stats?.config?.http1_body_threshold_kib ??
+    256
+  const upstreamTransportFieldsDisabled = effectiveUpstreamHTTPMode === 'http1'
+  const upstreamHTTPModeLabel = (mode: 'auto' | 'http1' | 'hybrid'): string => {
+    if (mode === 'http1') return t('HTTP/1.1 only')
+    if (mode === 'hybrid') return t('Hybrid by request size')
+    return t('Automatic (HTTP/2 preferred)')
+  }
+  const upstreamHTTPSourceLabel = (source: string | undefined): string => {
+    if (source === 'global') return t('system setting')
+    if (source === 'environment') return t('environment variable')
+    return t('built-in default')
+  }
   const maxCacheSizeRaw = form.watch(
     'performance_setting.disk_cache_max_size_mb'
   )
@@ -380,6 +444,228 @@ export function PerformanceSection(props: Props) {
             onSave={form.handleSubmit(onSubmit)}
             isSaving={updateOption.isPending}
           />
+
+          <div>
+            <h4 className='font-medium'>{t('Streaming response limits')}</h4>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t(
+                'Leave empty to inherit STREAMING_MAX_BUFFER_SIZE or the 16 MiB default. Channels can set their own override.'
+              )}
+            </p>
+          </div>
+
+          <FormField
+            control={form.control}
+            name='sse_max_event_size_mb'
+            render={({ field }) => (
+              <FormItem className='max-w-md'>
+                <FormLabel>{t('Global SSE max event size (MiB)')}</FormLabel>
+                <FormControl>
+                  <Input
+                    type='number'
+                    min={1}
+                    max={128}
+                    step={1}
+                    value={field.value ?? ''}
+                    onChange={(event) => {
+                      if (event.target.value === '') {
+                        field.onChange(undefined)
+                        return
+                      }
+                      field.onChange(event.target.valueAsNumber)
+                    }}
+                    onBlur={field.onBlur}
+                    name={field.name}
+                    ref={field.ref}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Maximum size of one upstream SSE event. Channel overrides take precedence. Allowed range: 1–128 MiB.'
+                  )}
+                  <span className='mt-1 block'>
+                    {t('Current effective global value: {{value}} MiB', {
+                      value: stats?.config?.sse_max_event_size_mb ?? 16,
+                    })}
+                  </span>
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <Separator />
+
+          <div>
+            <h4 className='font-medium'>{t('Upstream HTTP transport')}</h4>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t(
+                'Set the default upstream protocol strategy. Channels can inherit or override these values.'
+              )}
+            </p>
+          </div>
+
+          <div className='grid grid-cols-1 gap-4 md:grid-cols-3'>
+            <FormField
+              control={form.control}
+              name='upstream_http_mode'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Default transport mode')}</FormLabel>
+                  <Select
+                    value={field.value ?? 'inherit'}
+                    onValueChange={(value) => {
+                      field.onChange(value === 'inherit' ? undefined : value)
+                    }}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value='inherit'>
+                          {t('Inherit environment/default')}
+                        </SelectItem>
+                        <SelectItem value='auto'>
+                          {t('Automatic (HTTP/2 preferred)')}
+                        </SelectItem>
+                        <SelectItem value='hybrid'>
+                          {t('Hybrid by request size')}
+                        </SelectItem>
+                        <SelectItem value='http1'>
+                          {t('HTTP/1.1 only')}
+                        </SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    {t('Current effective mode: {{mode}} ({{source}})', {
+                      mode: upstreamHTTPModeLabel(effectiveUpstreamHTTPMode),
+                      source:
+                        configuredUpstreamHTTPMode === undefined
+                          ? upstreamHTTPSourceLabel(
+                              stats?.config?.upstream_http_mode_source
+                            )
+                          : t('system setting'),
+                    })}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='http2_connection_pool_size'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('HTTP/2 connection pool size')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={1}
+                      max={64}
+                      step={1}
+                      placeholder='1'
+                      value={field.value ?? ''}
+                      onChange={(event) => {
+                        if (event.target.value === '') {
+                          field.onChange(undefined)
+                          return
+                        }
+                        field.onChange(event.target.valueAsNumber)
+                      }}
+                      onBlur={field.onBlur}
+                      name={field.name}
+                      ref={field.ref}
+                      disabled={upstreamTransportFieldsDisabled}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t('Allowed range: 1–64. Leave empty to inherit.')}
+                    <span className='mt-1 block'>
+                      {t('Current effective value: {{value}} ({{source}})', {
+                        value: effectiveHTTP2PoolSize,
+                        source:
+                          configuredHTTP2PoolSize === undefined
+                            ? upstreamHTTPSourceLabel(
+                                stats?.config?.http2_connection_pool_size_source
+                              )
+                            : t('system setting'),
+                      })}
+                    </span>
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='http1_body_threshold_kib'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('HTTP/1 body threshold (KiB)')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={64}
+                      max={65536}
+                      step={1}
+                      placeholder='256'
+                      value={field.value ?? ''}
+                      onChange={(event) => {
+                        if (event.target.value === '') {
+                          field.onChange(undefined)
+                          return
+                        }
+                        field.onChange(event.target.valueAsNumber)
+                      }}
+                      onBlur={field.onBlur}
+                      name={field.name}
+                      ref={field.ref}
+                      disabled={upstreamTransportFieldsDisabled}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Hybrid mode sends bodies at or above this size, and bodies with unknown length, over HTTP/1.1.'
+                    )}
+                    <span className='mt-1 block'>
+                      {t(
+                        'Current effective value: {{value}} KiB ({{source}})',
+                        {
+                          value: effectiveHTTP1ThresholdKiB,
+                          source:
+                            configuredHTTP1ThresholdKiB === undefined
+                              ? upstreamHTTPSourceLabel(
+                                  stats?.config?.http1_body_threshold_kib_source
+                                )
+                              : t('system setting'),
+                        }
+                      )}
+                    </span>
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          {effectiveUpstreamHTTPMode === 'http1' ? (
+            <Alert>
+              <AlertDescription>
+                {t(
+                  'HTTP/1.1 can avoid upstream HTTP/2 congestion, but may create many more TCP and TLS connections.'
+                )}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
+          <Separator />
+
           {/* Disk Cache Settings */}
           <div>
             <h4 className='font-medium'>{t('Disk Cache Settings')}</h4>
@@ -673,15 +959,21 @@ export function PerformanceSection(props: Props) {
           </Button>
         </div>
 
-        {warmupStatus.length > 0 ? (
+        {aggregatedWarmupStatus.length > 0 ? (
           <div className='grid grid-cols-1 gap-3 md:grid-cols-2'>
-            {warmupStatus.map((item) => {
-              const hasError = Boolean(item.last_error)
-              const reusableCount =
-                item.reusable_success_count ?? item.success_count ?? 0
+            {aggregatedWarmupStatus.map((item) => {
+              let statusLabel = t('Reusable')
+              let statusVariant: 'success' | 'warning' | 'danger' = 'success'
+              if (item.state === 'partial') {
+                statusLabel = t('Partially failed')
+                statusVariant = 'warning'
+              } else if (item.state === 'failed') {
+                statusLabel = t('Failed')
+                statusVariant = 'danger'
+              }
               return (
                 <div
-                  key={`${item.host}|${item.proxy ?? ''}`}
+                  key={item.host}
                   className='space-y-2 rounded-lg border p-4'
                 >
                   <div className='flex min-w-0 items-center justify-between gap-3'>
@@ -689,50 +981,46 @@ export function PerformanceSection(props: Props) {
                       <p className='truncate text-sm font-medium'>
                         {item.host}
                       </p>
-                      {item.proxy && (
-                        <p className='text-muted-foreground truncate text-xs'>
-                          {item.proxy}
-                        </p>
-                      )}
                     </div>
-                    <StatusBadge
-                      variant={hasError ? 'danger' : 'success'}
-                      copyable={false}
-                    >
-                      {hasError ? t('Failed') : t('Reusable')}
+                    <StatusBadge variant={statusVariant} copyable={false}>
+                      {statusLabel}
                     </StatusBadge>
                   </div>
 
-                  <div className='text-muted-foreground grid grid-cols-2 gap-2 text-xs md:grid-cols-4'>
+                  <div className='text-muted-foreground grid grid-cols-2 gap-2 text-xs md:grid-cols-5'>
                     <span>
-                      {t('Status')}: {item.last_status_code || '-'}
+                      {t('Status')}:{' '}
+                      {item.statusCodes.length > 0
+                        ? item.statusCodes.join(', ')
+                        : '-'}
                     </span>
                     <span>
-                      {t('Latency')}: {item.last_latency_ms || 0}ms
+                      {t('Latency')}: {formatWarmupLatency(item)}
                     </span>
                     <span>
-                      {t('Reusable')}: {reusableCount}
+                      {t('Connections')}: {item.connectionCount}
                     </span>
                     <span>
-                      {t('Failures')}: {item.failure_count ?? 0}
+                      {t('Reusable')}: {item.reusableCount}
+                    </span>
+                    <span>
+                      {t('Failures')}: {item.failureCount}
                     </span>
                   </div>
 
                   <div className='text-muted-foreground grid grid-cols-1 gap-1 text-xs md:grid-cols-2'>
                     <span>
-                      {t('Last check')}: {formatUnixTime(item.last_check_at)}
+                      {t('Last check')}: {formatUnixTime(item.lastCheckAt)}
                     </span>
                     <span>
                       {t('Last reusable')}:{' '}
-                      {formatUnixTime(
-                        item.last_reusable_at ?? item.last_success_at
-                      )}
+                      {formatUnixTime(item.lastReusableAt)}
                     </span>
                   </div>
 
-                  {item.last_error && (
-                    <p className='text-destructive break-words text-xs'>
-                      {item.last_error}
+                  {item.lastError && (
+                    <p className='text-destructive text-xs break-words'>
+                      {item.lastError}
                     </p>
                   )}
                 </div>

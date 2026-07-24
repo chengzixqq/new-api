@@ -316,11 +316,15 @@ func runWithLeaseHeartbeat(task *model.SystemTask, runnerID string, fn func(ctx 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	done := make(chan struct{})
+	heartbeatDone := make(chan struct{})
 
 	go func() {
+		defer close(heartbeatDone)
 		for {
 			select {
 			case <-done:
+				return
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				if err := model.RenewSystemTaskLock(task.TaskID, runnerID, systemTaskLockUntil()); err != nil {
@@ -331,8 +335,12 @@ func runWithLeaseHeartbeat(task *model.SystemTask, runnerID string, fn func(ctx 
 		}
 	}()
 
+	defer func() {
+		cancel()
+		close(done)
+		<-heartbeatDone
+	}()
 	fn(ctx)
-	close(done)
 }
 
 func runLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID string) {
@@ -405,6 +413,12 @@ func runLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID str
 
 		if !progressed {
 			failSystemTask(task, runnerID, errors.New("no log rows were deleted"))
+			return
+		}
+	}
+	if model.LogRollupsSupported() && model.DB != nil && model.DB.Migrator().HasTable(&model.LogMinuteRollup{}) {
+		if err := model.CleanupLogRollups(ctx, payload.TargetTimestamp); err != nil {
+			failSystemTask(task, runnerID, err)
 			return
 		}
 	}

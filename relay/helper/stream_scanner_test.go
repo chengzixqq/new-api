@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
@@ -86,6 +87,100 @@ func TestNewStreamScanner_AllowsLargeStreamLine(t *testing.T) {
 	require.NoError(t, scanner.Err())
 }
 
+func TestNewStreamScannerUsesChannelSSELimit(t *testing.T) {
+	channelLimitMB := 1
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelSetting: dto.ChannelSettings{SSEMaxEventSizeMB: &channelLimitMB},
+	}}
+	payload := strings.Repeat("x", (1<<20)+1)
+	scanner := NewStreamScanner(strings.NewReader(payload+"\n"), info)
+	scanner.Split(bufio.ScanLines)
+
+	assert.False(t, scanner.Scan())
+	require.Error(t, scanner.Err())
+}
+
+type trackedReadCloser struct {
+	io.Reader
+	closed atomic.Bool
+}
+
+type failingReadCloser struct {
+	err error
+}
+
+func (r *failingReadCloser) Read([]byte) (int, error) { return 0, r.err }
+func (r *failingReadCloser) Close() error             { return nil }
+
+func (r *trackedReadCloser) Close() error {
+	r.closed.Store(true)
+	return nil
+}
+
+func TestStreamScannerHandlerClosesOversizedSSE(t *testing.T) {
+	channelLimitMB := 1
+	body := &trackedReadCloser{Reader: strings.NewReader("data: " + strings.Repeat("x", 1<<20) + "\n")}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{Body: body}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelSetting: dto.ChannelSettings{SSEMaxEventSizeMB: &channelLimitMB},
+	}}
+	var called atomic.Bool
+
+	StreamScannerHandler(c, resp, info, func(string, *StreamResult) {
+		called.Store(true)
+	})
+
+	assert.False(t, called.Load())
+	assert.True(t, body.closed.Load(), "oversized upstream stream must be cancelled")
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonScannerErr, info.StreamStatus.EndReason)
+	assert.True(t, info.StreamStatus.HasErrors() || info.StreamStatus.EndError != nil)
+	assert.True(t, info.SSELimitExceededBeforeOutput())
+}
+
+func TestStreamScannerHandlerMarksOutputBeforeOversizedSSE(t *testing.T) {
+	channelLimitMB := 1
+	body := &trackedReadCloser{Reader: strings.NewReader(
+		"data: first\n" + "data: " + strings.Repeat("x", 1<<20) + "\n",
+	)}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{Body: body}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelSetting: dto.ChannelSettings{SSEMaxEventSizeMB: &channelLimitMB},
+	}}
+
+	StreamScannerHandler(c, resp, info, func(data string, _ *StreamResult) {
+		_, _ = c.Writer.WriteString(data)
+	})
+
+	assert.Equal(t, "first", recorder.Body.String())
+	assert.True(t, body.closed.Load())
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonScannerErr, info.StreamStatus.EndReason)
+	assert.True(t, info.SSELimitExceededAfterOutput())
+}
+
+func TestStreamScannerHandlerDoesNotClassifyReadFailureAsSSELimit(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{Body: &failingReadCloser{err: assert.AnError}}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	StreamScannerHandler(c, resp, info, func(string, *StreamResult) {})
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonScannerErr, info.StreamStatus.EndReason)
+	assert.False(t, info.StreamStatus.SSELimitExceeded)
+	assert.False(t, info.SSELimitExceededBeforeOutput())
+	assert.False(t, info.SSELimitExceededAfterOutput())
+}
+
 func TestStreamScannerHandler_EmptyBody(t *testing.T) {
 	t.Parallel()
 
@@ -97,6 +192,28 @@ func TestStreamScannerHandler_EmptyBody(t *testing.T) {
 	})
 
 	assert.False(t, called.Load(), "handler should not be called for empty body")
+}
+
+func TestStreamScannerHandler_FirstFlushRequiresBodyBytes(t *testing.T) {
+	t.Run("empty callback", func(t *testing.T) {
+		c, resp, info := setupStreamTest(t, strings.NewReader("data: first\ndata: [DONE]\n"))
+		info.UpstreamTrace = &relaycommon.UpstreamTraceInfo{StartAt: time.Now().Add(-time.Second)}
+
+		StreamScannerHandler(c, resp, info, func(string, *StreamResult) {})
+
+		assert.True(t, info.UpstreamTrace.FirstFlushAt.IsZero())
+	})
+
+	t.Run("body write", func(t *testing.T) {
+		c, resp, info := setupStreamTest(t, strings.NewReader("data: first\ndata: [DONE]\n"))
+		info.UpstreamTrace = &relaycommon.UpstreamTraceInfo{StartAt: time.Now().Add(-time.Second)}
+
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+			_ = StringData(c, data)
+		})
+
+		assert.False(t, info.UpstreamTrace.FirstFlushAt.IsZero())
+	})
 }
 
 func TestStreamScannerHandler_1000Chunks(t *testing.T) {

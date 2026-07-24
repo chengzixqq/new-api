@@ -30,6 +30,7 @@ import type {
   CopyChannelParams,
   CopyChannelResponse,
   FetchModelsResponse,
+  EffectiveUpstreamHTTPConfigResponse,
   GetChannelResponse,
   GetChannelsParams,
   GetChannelsResponse,
@@ -110,6 +111,15 @@ export async function getChannel(id: number): Promise<GetChannelResponse> {
  */
 export async function getChannelOps(): Promise<ChannelOpsResponse> {
   const res = await api.get('/api/channel/ops', channelActionConfig())
+  return res.data
+}
+
+/**
+ * Get the effective non-sensitive upstream transport defaults for channel
+ * editors. This endpoint is available to delegated channel administrators.
+ */
+export async function getChannelUpstreamHTTPConfig(): Promise<EffectiveUpstreamHTTPConfigResponse> {
+  const res = await api.get('/api/channel/upstream_http_config')
   return res.data
 }
 

@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,6 +141,11 @@ func makeTask(userId, channelId, quota, tokenId int, billingSource string, subsc
 			},
 		},
 	}
+}
+
+func persistBillingTask(t *testing.T, task *model.Task) {
+	t.Helper()
+	require.NoError(t, model.DB.Create(task).Error)
 }
 
 func TestPriceDataOtherRatiosFilterAndSnapshot(t *testing.T) {
@@ -304,6 +310,7 @@ func TestRefundTaskQuota_Wallet(t *testing.T) {
 	seedChannel(t, channelID)
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	persistBillingTask(t, task)
 
 	RefundTaskQuota(ctx, task, "task failed: upstream error")
 
@@ -337,6 +344,7 @@ func TestRefundTaskQuota_Subscription(t *testing.T) {
 	seedSubscription(t, subID, userID, subTotal, subUsed)
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceSubscription, subID)
+	persistBillingTask(t, task)
 
 	RefundTaskQuota(ctx, task, "subscription task failed")
 
@@ -359,6 +367,7 @@ func TestRefundTaskQuota_ZeroQuota(t *testing.T) {
 	seedUser(t, userID, 5000)
 
 	task := makeTask(userID, 0, 0, 0, BillingSourceWallet, 0)
+	persistBillingTask(t, task)
 
 	RefundTaskQuota(ctx, task, "zero quota task")
 
@@ -380,6 +389,7 @@ func TestRefundTaskQuota_NoToken(t *testing.T) {
 	seedChannel(t, channelID)
 
 	task := makeTask(userID, channelID, preConsumed, 0, BillingSourceWallet, 0) // TokenId=0
+	persistBillingTask(t, task)
 
 	RefundTaskQuota(ctx, task, "no token task failed")
 
@@ -390,6 +400,68 @@ func TestRefundTaskQuota_NoToken(t *testing.T) {
 	log := getLastLog(t)
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeRefund, log.Type)
+}
+
+func TestRefundTaskQuota_IsIdempotent(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, tokenID, channelID = 41, 41, 41
+	const initialQuota, preConsumed, tokenRemain = 10000, 2500, 5000
+	seedUser(t, userID, initialQuota)
+	seedToken(t, tokenID, userID, "sk-idempotent-refund", tokenRemain)
+	seedChannel(t, channelID)
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	persistBillingTask(t, task)
+
+	require.NoError(t, RefundTaskQuota(ctx, task, "upstream failed"))
+	require.NoError(t, RefundTaskQuota(ctx, task, "duplicate poll"))
+
+	assert.Equal(t, initialQuota+preConsumed, getUserQuota(t, userID))
+	assert.Equal(t, tokenRemain+preConsumed, getTokenRemainQuota(t, tokenID))
+	assert.Equal(t, int64(1), countLogs(t))
+
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+	assert.Equal(t, model.TaskBillingStatusRefunded, persisted.BillingStatus)
+	assert.Equal(t, preConsumed, persisted.RefundedQuota)
+}
+
+func TestRefundTaskQuota_ConcurrentCallersRefundOnce(t *testing.T) {
+	truncate(t)
+
+	const userID, tokenID, channelID = 43, 43, 43
+	const initialQuota, preConsumed, tokenRemain = 12000, 3000, 6000
+	seedUser(t, userID, initialQuota)
+	seedToken(t, tokenID, userID, "sk-concurrent-refund", tokenRemain)
+	seedChannel(t, channelID)
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	persistBillingTask(t, task)
+
+	const callers = 6
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var candidate model.Task
+			if err := model.DB.First(&candidate, task.ID).Error; err != nil {
+				errs <- err
+				return
+			}
+			errs <- RefundTaskQuota(context.Background(), &candidate, "concurrent failure")
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, initialQuota+preConsumed, getUserQuota(t, userID))
+	assert.Equal(t, tokenRemain+preConsumed, getTokenRemainQuota(t, tokenID))
+	assert.Equal(t, int64(1), countLogs(t))
 }
 
 // ===========================================================================
@@ -410,6 +482,7 @@ func TestRecalculate_PositiveDelta(t *testing.T) {
 	seedChannel(t, channelID)
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	persistBillingTask(t, task)
 
 	RecalculateTaskQuota(ctx, task, actualQuota, "adaptor adjustment")
 
@@ -443,6 +516,7 @@ func TestRecalculate_NegativeDelta(t *testing.T) {
 	seedChannel(t, channelID)
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	persistBillingTask(t, task)
 
 	RecalculateTaskQuota(ctx, task, actualQuota, "adaptor adjustment")
 
@@ -472,6 +546,7 @@ func TestRecalculate_ZeroDelta(t *testing.T) {
 	seedUser(t, userID, initQuota)
 
 	task := makeTask(userID, 0, preConsumed, 0, BillingSourceWallet, 0)
+	persistBillingTask(t, task)
 
 	RecalculateTaskQuota(ctx, task, preConsumed, "exact match")
 
@@ -492,6 +567,7 @@ func TestRecalculate_ActualQuotaZero(t *testing.T) {
 	seedUser(t, userID, initQuota)
 
 	task := makeTask(userID, 0, 5000, 0, BillingSourceWallet, 0)
+	persistBillingTask(t, task)
 
 	RecalculateTaskQuota(ctx, task, 0, "zero actual")
 
@@ -516,6 +592,7 @@ func TestRecalculate_Subscription_NegativeDelta(t *testing.T) {
 	seedSubscription(t, subID, userID, subTotal, subUsed)
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceSubscription, subID)
+	persistBillingTask(t, task)
 
 	RecalculateTaskQuota(ctx, task, actualQuota, "subscription over-charge")
 
@@ -532,6 +609,29 @@ func TestRecalculate_Subscription_NegativeDelta(t *testing.T) {
 	assert.Equal(t, model.LogTypeRefund, log.Type)
 }
 
+func TestRecalculateTaskQuota_RollsBackTaskAndWalletWhenTokenMissing(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, channelID = 42, 42
+	const initialQuota, preConsumed, actualQuota = 10000, 2000, 3000
+	seedUser(t, userID, initialQuota)
+	seedChannel(t, channelID)
+	task := makeTask(userID, channelID, preConsumed, 9999, BillingSourceWallet, 0)
+	persistBillingTask(t, task)
+
+	err := RecalculateTaskQuota(ctx, task, actualQuota, "additional charge")
+	require.Error(t, err)
+	assert.Equal(t, initialQuota, getUserQuota(t, userID))
+
+	var persisted model.Task
+	require.NoError(t, model.DB.First(&persisted, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusInProgress, persisted.Status)
+	assert.Empty(t, persisted.BillingStatus)
+	assert.Equal(t, preConsumed, persisted.Quota)
+	assert.Equal(t, int64(0), countLogs(t))
+}
+
 // ===========================================================================
 // CAS + Billing integration tests
 // Simulates the flow in updateVideoSingleTask (service/task_polling.go)
@@ -543,46 +643,25 @@ func TestRecalculate_Subscription_NegativeDelta(t *testing.T) {
 func simulatePollBilling(ctx context.Context, task *model.Task, newStatus model.TaskStatus, actualQuota int) {
 	snap := task.Snapshot()
 
-	shouldRefund := false
-	shouldSettle := false
-	quota := task.Quota
-
 	task.Status = newStatus
 	switch string(newStatus) {
 	case model.TaskStatusSuccess:
 		task.Progress = "100%"
 		task.FinishTime = 9999
-		shouldSettle = true
+		_ = RecalculateTaskQuota(ctx, task, actualQuota, "test settle")
+		return
 	case model.TaskStatusFailure:
 		task.Progress = "100%"
 		task.FinishTime = 9999
 		task.FailReason = "upstream error"
-		if quota != 0 {
-			shouldRefund = true
-		}
+		_ = RefundTaskQuota(ctx, task, task.FailReason)
+		return
 	default:
 		task.Progress = "50%"
 	}
 
-	isDone := task.Status == model.TaskStatus(model.TaskStatusSuccess) || task.Status == model.TaskStatus(model.TaskStatusFailure)
-	if isDone && snap.Status != task.Status {
-		won, err := task.UpdateWithStatus(snap.Status)
-		if err != nil {
-			shouldRefund = false
-			shouldSettle = false
-		} else if !won {
-			shouldRefund = false
-			shouldSettle = false
-		}
-	} else if !snap.Equal(task.Snapshot()) {
+	if !snap.Equal(task.Snapshot()) {
 		_, _ = task.UpdateWithStatus(snap.Status)
-	}
-
-	if shouldSettle && actualQuota > 0 {
-		RecalculateTaskQuota(ctx, task, actualQuota, "test settle")
-	}
-	if shouldRefund {
-		RefundTaskQuota(ctx, task, task.FailReason)
 	}
 }
 
@@ -721,7 +800,7 @@ type mockAdaptor struct {
 }
 
 func (m *mockAdaptor) Init(_ *relaycommon.RelayInfo) {}
-func (m *mockAdaptor) FetchTask(string, string, map[string]any, string) (*http.Response, error) {
+func (m *mockAdaptor) FetchTask(context.Context, string, string, map[string]any, string) (*http.Response, error) {
 	return nil, nil
 }
 func (m *mockAdaptor) ParseTaskResult([]byte) (*relaycommon.TaskInfo, error) { return nil, nil }
@@ -747,6 +826,7 @@ func TestSettle_PerCallBilling_SkipsAdaptorAdjust(t *testing.T) {
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 	task.PrivateData.BillingContext.PerCallBilling = true
+	persistBillingTask(t, task)
 
 	adaptor := &mockAdaptor{adjustReturn: 2000}
 	taskResult := &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}
@@ -774,6 +854,7 @@ func TestSettle_PerCallBilling_SkipsTotalTokens(t *testing.T) {
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 	task.PrivateData.BillingContext.PerCallBilling = true
+	persistBillingTask(t, task)
 
 	adaptor := &mockAdaptor{adjustReturn: 0}
 	taskResult := &relaycommon.TaskInfo{Status: model.TaskStatusSuccess, TotalTokens: 9999}
@@ -802,6 +883,7 @@ func TestSettle_NonPerCallBilling_AppliesAdaptorAdjustment(t *testing.T) {
 
 	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
 	// PerCallBilling defaults to false
+	persistBillingTask(t, task)
 
 	adaptor := &mockAdaptor{adjustReturn: adaptorQuota}
 	taskResult := &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}
@@ -816,4 +898,27 @@ func TestSettle_NonPerCallBilling_AppliesAdaptorAdjustment(t *testing.T) {
 	log := getLastLog(t)
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeRefund, log.Type)
+}
+
+func TestResolveTaskGroupRatioUsesSubmissionSnapshot(t *testing.T) {
+	task := &model.Task{
+		PrivateData: model.TaskPrivateData{
+			BillingContext: &model.TaskBillingContext{
+				GroupRatio:         0.42,
+				GroupRatioResolved: true,
+			},
+		},
+	}
+
+	assert.Equal(t, 0.42, resolveTaskGroupRatio(task, "snapshot-model", "default"))
+}
+
+func TestResolveTaskGroupRatioKeepsLegacyFallback(t *testing.T) {
+	task := &model.Task{
+		PrivateData: model.TaskPrivateData{
+			BillingContext: &model.TaskBillingContext{GroupRatio: 0.42},
+		},
+	}
+
+	assert.Equal(t, 1.0, resolveTaskGroupRatio(task, "legacy-model", "default"))
 }

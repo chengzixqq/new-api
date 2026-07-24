@@ -2,11 +2,16 @@ package model
 
 import (
 	"errors"
+	"fmt"
+	"math"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -90,6 +95,93 @@ func TestUpdateUserSettingOnlyUpdatesSetting(t *testing.T) {
 	assert.Equal(t, 270, got.UsedQuota)
 	assert.Equal(t, 4, got.RequestCount)
 	assert.Equal(t, "zh", got.GetSetting().Language)
+}
+
+func TestValidateGroupRatioOverrides(t *testing.T) {
+	tests := []struct {
+		name      string
+		overrides map[string]float64
+		wantError bool
+	}{
+		{name: "nil", overrides: nil},
+		{name: "empty", overrides: map[string]float64{}},
+		{name: "valid discount", overrides: map[string]float64{"vip": 0.75}},
+		{name: "valid surcharge", overrides: map[string]float64{"legacy-group": 2}},
+		{name: "zero", overrides: map[string]float64{"vip": 0}, wantError: true},
+		{name: "negative", overrides: map[string]float64{"vip": -0.5}, wantError: true},
+		{name: "nan", overrides: map[string]float64{"vip": math.NaN()}, wantError: true},
+		{name: "infinity", overrides: map[string]float64{"vip": math.Inf(1)}, wantError: true},
+		{name: "too large", overrides: map[string]float64{"vip": 1000.01}, wantError: true},
+		{name: "blank group", overrides: map[string]float64{" ": 0.5}, wantError: true},
+		{name: "surrounding whitespace", overrides: map[string]float64{" vip ": 0.5}, wantError: true},
+		{name: "group name too long", overrides: map[string]float64{"12345678901234567890123456789012345678901234567890123456789012345": 0.5}, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateGroupRatioOverrides(tt.overrides)
+			if tt.wantError {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+
+	tooMany := make(map[string]float64, 257)
+	for i := 0; i < 257; i++ {
+		tooMany[fmt.Sprintf("group-%d", i)] = 1
+	}
+	assert.Error(t, ValidateGroupRatioOverrides(tooMany))
+}
+
+func TestEditUserGroupRatioOverridesOmittedPreservesAndEmptyClears(t *testing.T) {
+	setupUserUpdateTestState(t)
+
+	user := User{
+		Id:                     3,
+		Username:               "ratio-user",
+		Password:               "password",
+		DisplayName:            "Ratio User",
+		Group:                  "default",
+		Status:                 common.UserStatusEnabled,
+		GroupRatioOverridesRaw: `{"vip":0.8}`,
+	}
+	require.NoError(t, DB.Create(&user).Error)
+
+	omitted, err := GetUserById(user.Id, false)
+	require.NoError(t, err)
+	omitted.GroupRatioOverrides = nil
+	require.NoError(t, omitted.EditWithTx(DB, false))
+
+	var stored User
+	require.NoError(t, DB.First(&stored, user.Id).Error)
+	assert.JSONEq(t, `{"vip":0.8}`, stored.GroupRatioOverridesRaw)
+
+	omitted.GroupRatioOverrides = map[string]float64{}
+	require.NoError(t, omitted.EditWithTx(DB, false))
+	require.NoError(t, DB.First(&stored, user.Id).Error)
+	assert.JSONEq(t, `{}`, stored.GroupRatioOverridesRaw)
+
+	omitted.GroupRatioOverrides = map[string]float64{"vip": 0.65, "legacy": 1.2}
+	require.NoError(t, omitted.EditWithTx(DB, false))
+	require.NoError(t, DB.First(&stored, user.Id).Error)
+	require.NoError(t, stored.LoadGroupRatioOverrides())
+	assert.Equal(t, omitted.GroupRatioOverrides, stored.GroupRatioOverrides)
+}
+
+func TestUserBaseWriteContextIncludesGroupRatioOverrides(t *testing.T) {
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	cache := UserBase{
+		Id:                  42,
+		GroupRatioOverrides: `{"vip":0.75}`,
+	}
+
+	cache.WriteContext(ctx)
+
+	overrides, ok := common.GetContextKeyType[map[string]float64](ctx, constant.ContextKeyUserGroupRatioOverrides)
+	require.True(t, ok)
+	assert.Equal(t, map[string]float64{"vip": 0.75}, overrides)
 }
 
 func TestEnsureEmailAvailableRejectsExistingEmailCaseInsensitive(t *testing.T) {

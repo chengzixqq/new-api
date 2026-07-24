@@ -40,8 +40,18 @@ import type {
 export async function getUsers(
   params: GetUsersParams = {}
 ): Promise<GetUsersResponse> {
-  const { p = 1, page_size = 10 } = params
-  const res = await api.get(`/api/user/?p=${p}&page_size=${page_size}`)
+  const {
+    p = 1,
+    page_size = 10,
+    include_group_ratio_overrides = false,
+  } = params
+  const queryParams = new URLSearchParams()
+  queryParams.set('p', String(p))
+  queryParams.set('page_size', String(page_size))
+  if (include_group_ratio_overrides) {
+    queryParams.set('include_group_ratio_overrides', 'true')
+  }
+  const res = await api.get(`/api/user/?${queryParams.toString()}`)
   return res.data
 }
 
@@ -58,6 +68,7 @@ export async function searchUsers(
     status = '',
     p = 1,
     page_size = 10,
+    include_group_ratio_overrides = false,
   } = params
   const queryParams = new URLSearchParams()
   queryParams.set('keyword', keyword)
@@ -66,6 +77,9 @@ export async function searchUsers(
   if (status) queryParams.set('status', status)
   queryParams.set('p', String(p))
   queryParams.set('page_size', String(page_size))
+  if (include_group_ratio_overrides) {
+    queryParams.set('include_group_ratio_overrides', 'true')
+  }
   const res = await api.get(`/api/user/search?${queryParams.toString()}`)
   return res.data
 }

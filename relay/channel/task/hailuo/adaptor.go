@@ -2,6 +2,7 @@ package hailuo
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,12 +29,16 @@ type TaskAdaptor struct {
 	ChannelType int
 	apiKey      string
 	baseURL     string
+	httpClient  *http.Client
 }
+
+const hailuoTaskResponseBodyLimit = 1 << 20
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 	a.ChannelType = info.ChannelType
 	a.baseURL = info.ChannelBaseUrl
 	a.apiKey = info.ApiKey
+	a.httpClient = service.NewChannelUpstreamHTTPPolicyClient(info.ChannelId, info.ChannelSetting.Proxy, info.ChannelOtherSettings)
 }
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.TaskError) {
@@ -111,7 +116,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	return hResp.TaskID, responseBody, nil
 }
 
-func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy string) (*http.Response, error) {
+func (a *TaskAdaptor) FetchTask(ctx context.Context, baseUrl, key string, body map[string]any, proxy string) (*http.Response, error) {
 	taskID, ok := body["task_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("invalid task_id")
@@ -119,7 +124,7 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 
 	uri := fmt.Sprintf("%s%s?task_id=%s", baseUrl, QueryTaskEndpoint, taskID)
 
-	req, err := http.NewRequest(http.MethodGet, uri, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -127,10 +132,7 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
 
-	client, err := service.GetHttpClientWithProxy(proxy)
-	if err != nil {
-		return nil, fmt.Errorf("new proxy http client failed: %w", err)
-	}
+	client := service.NewUpstreamHTTPPolicyClientFromContext(ctx, proxy)
 	return client.Do(req)
 }
 
@@ -182,6 +184,10 @@ func (a *TaskAdaptor) parseResolutionFromSize(size string, modelConfig ModelConf
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
+	return a.ParseTaskResultWithContext(context.Background(), respBody)
+}
+
+func (a *TaskAdaptor) ParseTaskResultWithContext(ctx context.Context, respBody []byte) (*relaycommon.TaskInfo, error) {
 	resTask := QueryTaskResponse{}
 	if err := common.Unmarshal(respBody, &resTask); err != nil {
 		return nil, errors.Wrap(err, "unmarshal task result failed")
@@ -208,7 +214,7 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	case TaskStatusSuccess:
 		taskResult.Status = model.TaskStatusSuccess
 		taskResult.Progress = "100%"
-		taskResult.Url = a.buildVideoURL(resTask.TaskID, resTask.FileID)
+		taskResult.Url = a.buildVideoURL(ctx, resTask.TaskID, resTask.FileID)
 	case TaskStatusFailed:
 		taskResult.Status = model.TaskStatusFailure
 		taskResult.Progress = "100%"
@@ -245,14 +251,17 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, erro
 	return jsonData, nil
 }
 
-func (a *TaskAdaptor) buildVideoURL(_, fileID string) string {
+func (a *TaskAdaptor) buildVideoURL(ctx context.Context, _, fileID string) string {
 	if a.apiKey == "" || a.baseURL == "" {
 		return ""
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	url := fmt.Sprintf("%s/v1/files/retrieve?file_id=%s", a.baseURL, fileID)
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return ""
 	}
@@ -260,14 +269,21 @@ func (a *TaskAdaptor) buildVideoURL(_, fileID string) string {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
 
-	resp, err := service.GetHttpClient().Do(req)
+	client := a.httpClient
+	if client == nil {
+		client = service.GetHttpClient()
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return ""
 	}
 	defer resp.Body.Close()
 
-	responseBody, err := io.ReadAll(resp.Body)
+	responseBody, err := service.ReadResponseBodyLimited(resp.Body, hailuoTaskResponseBodyLimit)
 	if err != nil {
+		return ""
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return ""
 	}
 

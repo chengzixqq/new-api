@@ -21,49 +21,52 @@ const UserNameMaxLength = 20
 // User if you add sensitive fields, don't forget to clean them in setupLogin function.
 // Otherwise, the sensitive information will be saved on local storage in plain text!
 type User struct {
-	Id               int                        `json:"id"`
-	Username         string                     `json:"username" gorm:"unique;index" validate:"max=20"`
-	Password         string                     `json:"password" gorm:"not null;" validate:"min=8,max=20"`
-	OriginalPassword string                     `json:"original_password" gorm:"-:all"` // this field is only for Password change verification, don't save it to database!
-	DisplayName      string                     `json:"display_name" gorm:"index" validate:"max=20"`
-	Role             int                        `json:"role" gorm:"type:int;default:1"`   // admin, common
-	Status           int                        `json:"status" gorm:"type:int;default:1"` // enabled, disabled
-	Email            string                     `json:"email" gorm:"index" validate:"max=50"`
-	GitHubId         string                     `json:"github_id" gorm:"column:github_id;index"`
-	DiscordId        string                     `json:"discord_id" gorm:"column:discord_id;index"`
-	OidcId           string                     `json:"oidc_id" gorm:"column:oidc_id;index"`
-	WeChatId         string                     `json:"wechat_id" gorm:"column:wechat_id;index"`
-	TelegramId       string                     `json:"telegram_id" gorm:"column:telegram_id;index"`
-	VerificationCode string                     `json:"verification_code" gorm:"-:all"`                         // this field is only for Email verification, don't save it to database!
-	AccessToken      *string                    `json:"-" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
-	Quota            int                        `json:"quota" gorm:"type:int;default:0"`
-	UsedQuota        int                        `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
-	RequestCount     int                        `json:"request_count" gorm:"type:int;default:0;"`               // request number
-	Group            string                     `json:"group" gorm:"type:varchar(64);default:'default'"`
-	AffCode          string                     `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
-	AffCount         int                        `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
-	AffQuota         int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
-	AffHistoryQuota  int                        `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
-	InviterId        int                        `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
-	DeletedAt        gorm.DeletedAt             `gorm:"index"`
-	LinuxDOId        string                     `json:"linux_do_id" gorm:"column:linux_do_id;index"`
-	Setting          string                     `json:"setting" gorm:"type:text;column:setting"`
-	Remark           string                     `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
-	StripeCustomer   string                     `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
-	CreatedAt        int64                      `json:"created_at" gorm:"autoCreateTime;column:created_at"`
-	LastLoginAt      int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
-	AdminPermissions map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+	Id                     int                        `json:"id"`
+	Username               string                     `json:"username" gorm:"unique;index" validate:"max=20"`
+	Password               string                     `json:"password" gorm:"not null;" validate:"min=8,max=20"`
+	OriginalPassword       string                     `json:"original_password" gorm:"-:all"` // this field is only for Password change verification, don't save it to database!
+	DisplayName            string                     `json:"display_name" gorm:"index" validate:"max=20"`
+	Role                   int                        `json:"role" gorm:"type:int;default:1"`   // admin, common
+	Status                 int                        `json:"status" gorm:"type:int;default:1"` // enabled, disabled
+	Email                  string                     `json:"email" gorm:"index" validate:"max=50"`
+	GitHubId               string                     `json:"github_id" gorm:"column:github_id;index"`
+	DiscordId              string                     `json:"discord_id" gorm:"column:discord_id;index"`
+	OidcId                 string                     `json:"oidc_id" gorm:"column:oidc_id;index"`
+	WeChatId               string                     `json:"wechat_id" gorm:"column:wechat_id;index"`
+	TelegramId             string                     `json:"telegram_id" gorm:"column:telegram_id;index"`
+	VerificationCode       string                     `json:"verification_code" gorm:"-:all"`                         // this field is only for Email verification, don't save it to database!
+	AccessToken            *string                    `json:"-" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
+	Quota                  int                        `json:"quota" gorm:"type:int;default:0"`
+	UsedQuota              int                        `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
+	RequestCount           int                        `json:"request_count" gorm:"type:int;default:0;"`               // request number
+	Group                  string                     `json:"group" gorm:"type:varchar(64);default:'default'"`
+	GroupRatioOverridesRaw string                     `json:"-" gorm:"type:text;column:group_ratio_overrides"`
+	GroupRatioOverrides    map[string]float64         `json:"group_ratio_overrides,omitempty" gorm:"-:all"`
+	AffCode                string                     `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
+	AffCount               int                        `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
+	AffQuota               int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
+	AffHistoryQuota        int                        `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
+	InviterId              int                        `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
+	DeletedAt              gorm.DeletedAt             `gorm:"index"`
+	LinuxDOId              string                     `json:"linux_do_id" gorm:"column:linux_do_id;index"`
+	Setting                string                     `json:"setting" gorm:"type:text;column:setting"`
+	Remark                 string                     `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
+	StripeCustomer         string                     `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
+	CreatedAt              int64                      `json:"created_at" gorm:"autoCreateTime;column:created_at"`
+	LastLoginAt            int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
+	AdminPermissions       map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
 }
 
 func (user *User) ToBaseUser() *UserBase {
 	cache := &UserBase{
-		Id:       user.Id,
-		Group:    user.Group,
-		Quota:    user.Quota,
-		Status:   user.Status,
-		Username: user.Username,
-		Setting:  user.Setting,
-		Email:    user.Email,
+		Id:                  user.Id,
+		Group:               user.Group,
+		Quota:               user.Quota,
+		Status:              user.Status,
+		Username:            user.Username,
+		Setting:             user.Setting,
+		Email:               user.Email,
+		GroupRatioOverrides: user.GroupRatioOverridesRaw,
 	}
 	return cache
 }
@@ -286,7 +289,15 @@ func GetMaxUserId() int {
 	return user.Id
 }
 
-func GetAllUsers(pageInfo *common.PageInfo) (users []*User, total int64, err error) {
+func loadUserListGroupRatioOverrides(users []*User) {
+	for _, user := range users {
+		if err := user.LoadGroupRatioOverrides(); err != nil {
+			common.SysError(fmt.Sprintf("failed to parse group ratio overrides for user %d: %s", user.Id, err.Error()))
+		}
+	}
+}
+
+func GetAllUsers(pageInfo *common.PageInfo, includeGroupRatioOverrides bool) (users []*User, total int64, err error) {
 	// Start transaction
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -306,21 +317,27 @@ func GetAllUsers(pageInfo *common.PageInfo) (users []*User, total int64, err err
 	}
 
 	// Get paginated users within same transaction
-	err = tx.Unscoped().Order("id desc").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Omit("password", "access_token").Find(&users).Error
+	query := tx.Unscoped().Order("id desc").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Omit("password", "access_token")
+	if !includeGroupRatioOverrides {
+		query = query.Omit("group_ratio_overrides")
+	}
+	err = query.Find(&users).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
-
 	// Commit transaction
 	if err = tx.Commit().Error; err != nil {
 		return nil, 0, err
+	}
+	if includeGroupRatioOverrides {
+		loadUserListGroupRatioOverrides(users)
 	}
 
 	return users, total, nil
 }
 
-func SearchUsers(keyword string, group string, role *int, status *int, startIdx int, num int) ([]*User, int64, error) {
+func SearchUsers(keyword string, group string, role *int, status *int, startIdx int, num int, includeGroupRatioOverrides bool) ([]*User, int64, error) {
 	var users []*User
 	var total int64
 	var err error
@@ -374,15 +391,21 @@ func SearchUsers(keyword string, group string, role *int, status *int, startIdx 
 	}
 
 	// 获取分页数据
-	err = query.Omit("password", "access_token").Order("id desc").Limit(num).Offset(startIdx).Find(&users).Error
+	query = query.Omit("password", "access_token")
+	if !includeGroupRatioOverrides {
+		query = query.Omit("group_ratio_overrides")
+	}
+	err = query.Order("id desc").Limit(num).Offset(startIdx).Find(&users).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
-
 	// 提交事务
 	if err = tx.Commit().Error; err != nil {
 		return nil, 0, err
+	}
+	if includeGroupRatioOverrides {
+		loadUserListGroupRatioOverrides(users)
 	}
 
 	return users, total, nil
@@ -692,6 +715,13 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 		"display_name": newUser.DisplayName,
 		"group":        newUser.Group,
 		"remark":       newUser.Remark,
+	}
+	if newUser.GroupRatioOverrides != nil {
+		groupRatioOverrides, err := MarshalGroupRatioOverrides(newUser.GroupRatioOverrides)
+		if err != nil {
+			return err
+		}
+		updates["group_ratio_overrides"] = groupRatioOverrides
 	}
 	if updatePassword {
 		updates["password"] = newUser.Password
@@ -1050,54 +1080,24 @@ func GetUserSetting(id int, fromDB bool) (settingMap dto.UserSetting, err error)
 	return userBase.GetSetting(), nil
 }
 
-func IncreaseUserQuota(id int, quota int, db bool) (err error) {
-	if quota < 0 {
-		return errors.New("quota 不能为负数！")
-	}
-	gopool.Go(func() {
-		err := cacheIncrUserQuota(id, int64(quota))
-		if err != nil {
-			common.SysLog("failed to increase user quota: " + err.Error())
-		}
-	})
-	if !db && common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeUserQuota, id, quota)
-		return nil
-	}
-	return increaseUserQuota(id, quota)
-}
-
-func increaseUserQuota(id int, quota int) (err error) {
-	err = DB.Model(&User{}).Where("id = ?", id).Update("quota", gorm.Expr("quota + ?", quota)).Error
-	if err != nil {
+func IncreaseUserQuota(id int, quota int, _ bool) error {
+	if err := IncreaseUserQuotaTx(DB, id, quota); err != nil {
 		return err
 	}
-	return err
+	if quota > 0 {
+		invalidateBillingQuotaCaches(id, "")
+	}
+	return nil
 }
 
-func DecreaseUserQuota(id int, quota int, db bool) (err error) {
-	if quota < 0 {
-		return errors.New("quota 不能为负数！")
-	}
-	gopool.Go(func() {
-		err := cacheDecrUserQuota(id, int64(quota))
-		if err != nil {
-			common.SysLog("failed to decrease user quota: " + err.Error())
-		}
-	})
-	if !db && common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeUserQuota, id, -quota)
-		return nil
-	}
-	return decreaseUserQuota(id, quota)
-}
-
-func decreaseUserQuota(id int, quota int) (err error) {
-	err = DB.Model(&User{}).Where("id = ?", id).Update("quota", gorm.Expr("quota - ?", quota)).Error
-	if err != nil {
+func DecreaseUserQuota(id int, quota int, _ bool) error {
+	if err := DecreaseUserQuotaTx(DB, id, quota); err != nil {
 		return err
 	}
-	return err
+	if quota > 0 {
+		invalidateBillingQuotaCaches(id, "")
+	}
+	return nil
 }
 
 func DeltaUpdateUserQuota(id int, delta int) (err error) {

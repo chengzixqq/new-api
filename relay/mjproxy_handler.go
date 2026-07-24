@@ -2,11 +2,13 @@ package relay
 
 import (
 	"bytes"
-	"encoding/json"
+	"context"
+	"crypto/hmac"
 	"fmt"
 	"io"
-	"log"
+	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -26,75 +28,134 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const (
+	midjourneyImageURLTTL       = 24 * time.Hour
+	midjourneyImageFetchTimeout = 120 * time.Second
+	defaultMidjourneyImageBytes = int64(64 << 20)
+)
+
+func midjourneyImageSignature(userID int, taskID string, expires int64) string {
+	payload := "midjourney-image:v1\x00" + strconv.Itoa(userID) + "\x00" + taskID + "\x00" + strconv.FormatInt(expires, 10)
+	return common.GenerateHMAC(payload)
+}
+
+func validMidjourneyImageSignature(userID int, taskID string, expires int64, signature string) bool {
+	if userID <= 0 || taskID == "" || expires <= 0 || signature == "" {
+		return false
+	}
+	expected := midjourneyImageSignature(userID, taskID, expires)
+	return hmac.Equal([]byte(expected), []byte(signature))
+}
+
+func buildMidjourneyImageURL(task *model.Midjourney, now time.Time) string {
+	if task == nil || task.UserId <= 0 || task.MjId == "" {
+		return ""
+	}
+	expires := now.Add(midjourneyImageURLTTL).Unix()
+	query := url.Values{}
+	query.Set("user_id", strconv.Itoa(task.UserId))
+	query.Set("expires", strconv.FormatInt(expires, 10))
+	query.Set("signature", midjourneyImageSignature(task.UserId, task.MjId, expires))
+	return strings.TrimRight(system_setting.ServerAddress, "/") + "/mj/image/" + url.PathEscape(task.MjId) + "?" + query.Encode()
+}
+
+func maxMidjourneyImageBytes() int64 {
+	if constant.MaxFileDownloadMB <= 0 {
+		return defaultMidjourneyImageBytes
+	}
+	const bytesPerMiB = int64(1 << 20)
+	megabytes := int64(constant.MaxFileDownloadMB)
+	maxInt64 := int64(^uint64(0) >> 1)
+	if megabytes > maxInt64/bytesPerMiB {
+		return maxInt64
+	}
+	return megabytes * bytesPerMiB
+}
+
+func allowedMidjourneyImageMediaType(rawContentType string, body []byte) (string, bool) {
+	if len(body) == 0 {
+		return "", false
+	}
+	detected := strings.ToLower(http.DetectContentType(body))
+	if strings.Contains(detected, "html") || strings.Contains(detected, "xml") || strings.Contains(detected, "svg") || strings.HasPrefix(detected, "text/") {
+		return "", false
+	}
+
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(rawContentType))
+	if err == nil {
+		mediaType = strings.ToLower(mediaType)
+		if strings.HasPrefix(mediaType, "image/") && !strings.Contains(mediaType, "svg") && !strings.Contains(mediaType, "xml") {
+			return mediaType, true
+		}
+	}
+	if strings.HasPrefix(detected, "image/") && !strings.Contains(detected, "svg") && !strings.Contains(detected, "xml") {
+		return detected, true
+	}
+	return "", false
+}
+
 func RelayMidjourneyImage(c *gin.Context) {
-	taskId := c.Param("id")
-	midjourneyTask := model.GetByOnlyMJId(taskId)
+	taskID := c.Param("id")
+	userID, userIDErr := strconv.Atoi(c.Query("user_id"))
+	expires, expiresErr := strconv.ParseInt(c.Query("expires"), 10, 64)
+	signature := c.Query("signature")
+	now := time.Now()
+	if userIDErr != nil || expiresErr != nil || expires <= now.Unix() || expires > now.Add(midjourneyImageURLTTL).Unix() || !validMidjourneyImageSignature(userID, taskID, expires, signature) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "invalid_or_expired_image_signature"})
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("X-Content-Type-Options", "nosniff")
+
+	midjourneyTask := model.GetByMJId(userID, taskID)
 	if midjourneyTask == nil {
-		c.JSON(400, gin.H{
+		c.JSON(http.StatusNotFound, gin.H{
 			"error": "midjourney_task_not_found",
 		})
 		return
 	}
-	var httpClient *http.Client
-	var proxy string
-	if channel, err := model.CacheGetChannel(midjourneyTask.ChannelId); err == nil {
-		proxy = channel.GetSetting().Proxy
-		if proxy != "" {
-			if httpClient, err = service.NewProxyHttpClient(proxy); err != nil {
-				c.JSON(400, gin.H{
-					"error": "proxy_url_invalid",
-				})
-				return
-			}
-		}
-	}
-	if httpClient == nil {
-		httpClient = service.GetSSRFProtectedHTTPClient()
-	}
-	var validateErr error
-	if proxy == "" {
-		validateErr = service.ValidateSSRFProtectedFetchURL(midjourneyTask.ImageUrl)
-	} else {
-		// 渠道代理路径的连接由代理侧建立，无法做拨号时逐 IP 校验，
-		// 因此保留请求前的一次性 SSRF 校验。
-		fetchSetting := system_setting.GetFetchSetting()
-		validateErr = common.ValidateURLWithFetchSetting(midjourneyTask.ImageUrl, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain)
-	}
-	if validateErr != nil {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": fmt.Sprintf("request blocked: %v", validateErr),
-		})
+	if strings.TrimSpace(midjourneyTask.ImageUrl) == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "midjourney_image_not_found"})
 		return
 	}
-	resp, err := httpClient.Get(midjourneyTask.ImageUrl)
+
+	fetchCtx, cancel := context.WithTimeout(c.Request.Context(), midjourneyImageFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, midjourneyTask.ImageUrl, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "http_get_image_failed",
-		})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "http_get_image_failed"})
+		return
+	}
+	httpClient := service.NewSSRFProtectedHTTPClient()
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		logger.LogError(c, "failed to fetch signed Midjourney image: "+err.Error())
+		c.JSON(http.StatusBadGateway, gin.H{"error": "http_get_image_failed"})
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		responseBody, _ := io.ReadAll(resp.Body)
-		c.JSON(resp.StatusCode, gin.H{
-			"error": string(responseBody),
-		})
+		_, _ = service.ReadResponseBodyLimited(resp.Body, 1<<20)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream_image_failed"})
 		return
 	}
-	// 从Content-Type头获取MIME类型
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		// 如果无法确定内容类型，则默认为jpeg
-		contentType = "image/jpeg"
+	maxBytes := maxMidjourneyImageBytes()
+	if resp.ContentLength > maxBytes {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "midjourney_image_too_large"})
+		return
 	}
-	// 设置响应的内容类型
-	c.Writer.Header().Set("Content-Type", contentType)
-	// 将图片流式传输到响应体
-	_, err = io.Copy(c.Writer, resp.Body)
+	body, err := service.ReadResponseBodyLimited(resp.Body, maxBytes)
 	if err != nil {
-		log.Println("Failed to stream image:", err)
+		logger.LogError(c, "failed to read signed Midjourney image: "+err.Error())
+		c.JSON(http.StatusBadGateway, gin.H{"error": "midjourney_image_too_large_or_unreadable"})
+		return
 	}
-	return
+	contentType, ok := allowedMidjourneyImageMediaType(resp.Header.Get("Content-Type"), body)
+	if !ok {
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "invalid_midjourney_image_type"})
+		return
+	}
+	c.Data(http.StatusOK, contentType, body)
 }
 
 func RelayMidjourneyNotify(c *gin.Context) *dto.MidjourneyResponse {
@@ -125,7 +186,7 @@ func RelayMidjourneyNotify(c *gin.Context) *dto.MidjourneyResponse {
 	midjourneyTask.FinishTime = midjRequest.FinishTime
 	midjourneyTask.ImageUrl = midjRequest.ImageUrl
 	midjourneyTask.VideoUrl = midjRequest.VideoUrl
-	videoUrlsStr, _ := json.Marshal(midjRequest.VideoUrls)
+	videoUrlsStr, _ := common.Marshal(midjRequest.VideoUrls)
 	midjourneyTask.VideoUrls = string(videoUrlsStr)
 	midjourneyTask.Status = midjRequest.Status
 	midjourneyTask.FailReason = midjRequest.FailReason
@@ -150,10 +211,7 @@ func coverMidjourneyTaskDto(c *gin.Context, originTask *model.Midjourney) (midjo
 	midjourneyTask.FinishTime = originTask.FinishTime
 	midjourneyTask.ImageUrl = ""
 	if originTask.ImageUrl != "" && setting.MjForwardUrlEnabled {
-		midjourneyTask.ImageUrl = system_setting.ServerAddress + "/mj/image/" + originTask.MjId
-		if originTask.Status != "SUCCESS" {
-			midjourneyTask.ImageUrl += "?rand=" + strconv.FormatInt(time.Now().UnixNano(), 10)
-		}
+		midjourneyTask.ImageUrl = buildMidjourneyImageURL(originTask, time.Now())
 	} else {
 		midjourneyTask.ImageUrl = originTask.ImageUrl
 	}
@@ -167,21 +225,21 @@ func coverMidjourneyTaskDto(c *gin.Context, originTask *model.Midjourney) (midjo
 	midjourneyTask.Prompt = originTask.Prompt
 	if originTask.Buttons != "" {
 		var buttons []dto.ActionButton
-		err := json.Unmarshal([]byte(originTask.Buttons), &buttons)
+		err := common.Unmarshal([]byte(originTask.Buttons), &buttons)
 		if err == nil {
 			midjourneyTask.Buttons = buttons
 		}
 	}
 	if originTask.VideoUrls != "" {
 		var videoUrls []dto.ImgUrls
-		err := json.Unmarshal([]byte(originTask.VideoUrls), &videoUrls)
+		err := common.Unmarshal([]byte(originTask.VideoUrls), &videoUrls)
 		if err == nil {
 			midjourneyTask.VideoUrls = videoUrls
 		}
 	}
 	if originTask.Properties != "" {
 		var properties dto.Properties
-		err := json.Unmarshal([]byte(originTask.Properties), &properties)
+		err := common.Unmarshal([]byte(originTask.Properties), &properties)
 		if err == nil {
 			midjourneyTask.Properties = &properties
 		}
@@ -281,7 +339,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "insert_midjourney_task_failed")
 	}
 	c.Writer.WriteHeader(mjResp.StatusCode)
-	respBody, err := json.Marshal(midjResponse)
+	respBody, err := common.Marshal(midjResponse)
 	if err != nil {
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "unmarshal_response_body_failed")
 	}
@@ -317,7 +375,7 @@ func RelayMidjourneyTaskImageSeed(c *gin.Context) *dto.MidjourneyResponse {
 	}
 	midjResponse := &midjResponseWithStatus.Response
 	c.Writer.WriteHeader(midjResponseWithStatus.StatusCode)
-	respBody, err := json.Marshal(midjResponse)
+	respBody, err := common.Marshal(midjResponse)
 	if err != nil {
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "unmarshal_response_body_failed")
 	}
@@ -340,7 +398,7 @@ func RelayMidjourneyTask(c *gin.Context, relayMode int) *dto.MidjourneyResponse 
 			}
 		}
 		midjourneyTask := coverMidjourneyTaskDto(c, originTask)
-		respBody, err = json.Marshal(midjourneyTask)
+		respBody, err = common.Marshal(midjourneyTask)
 		if err != nil {
 			return &dto.MidjourneyResponse{
 				Code:        4,
@@ -369,7 +427,7 @@ func RelayMidjourneyTask(c *gin.Context, relayMode int) *dto.MidjourneyResponse 
 		if tasks == nil {
 			tasks = make([]dto.MidjourneyDto, 0)
 		}
-		respBody, err = json.Marshal(tasks)
+		respBody, err = common.Marshal(tasks)
 		if err != nil {
 			return &dto.MidjourneyResponse{
 				Code:        4,

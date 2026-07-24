@@ -12,9 +12,7 @@ import (
 )
 
 const (
-	BatchUpdateTypeUserQuota = iota
-	BatchUpdateTypeTokenQuota
-	BatchUpdateTypeUsedQuota
+	BatchUpdateTypeUsedQuota = iota
 	BatchUpdateTypeChannelUsedQuota
 	BatchUpdateTypeRequestCount
 	BatchUpdateTypeCount // if you add a new type, you need to add a new map and a new lock
@@ -76,30 +74,21 @@ func batchUpdate() {
 	}
 
 	for i, store := range stores {
-		if i == BatchUpdateTypeUserQuota || i == BatchUpdateTypeUsedQuota || i == BatchUpdateTypeRequestCount {
+		if i == BatchUpdateTypeUsedQuota || i == BatchUpdateTypeRequestCount {
 			continue
 		}
 		for key, value := range store {
 			switch i {
-			case BatchUpdateTypeTokenQuota:
-				err := increaseTokenQuota(key, value)
-				if err != nil {
-					common.SysLog("failed to batch update token quota: " + err.Error())
-				}
 			case BatchUpdateTypeChannelUsedQuota:
 				updateChannelUsedQuota(key, value)
 			}
 		}
 	}
 
-	userQuotaStore := stores[BatchUpdateTypeUserQuota]
 	usedQuotaStore := stores[BatchUpdateTypeUsedQuota]
 	requestCountStore := stores[BatchUpdateTypeRequestCount]
 
-	userIDs := make(map[int]struct{}, len(userQuotaStore)+len(usedQuotaStore)+len(requestCountStore))
-	for key := range userQuotaStore {
-		userIDs[key] = struct{}{}
-	}
+	userIDs := make(map[int]struct{}, len(usedQuotaStore)+len(requestCountStore))
 	for key := range usedQuotaStore {
 		userIDs[key] = struct{}{}
 	}
@@ -107,7 +96,7 @@ func batchUpdate() {
 		userIDs[key] = struct{}{}
 	}
 	for key := range userIDs {
-		updateUserQuotaUsedQuotaAndRequestCount(key, userQuotaStore[key], usedQuotaStore[key], requestCountStore[key])
+		updateUserQuotaUsedQuotaAndRequestCount(key, 0, usedQuotaStore[key], requestCountStore[key])
 	}
 	common.SysLog("batch update finished")
 }

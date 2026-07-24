@@ -781,6 +781,72 @@ func TestCalculateTextQuotaSummaryUsesModelGroupPriceOverrides(t *testing.T) {
 	require.Equal(t, 200000, summary.Quota)
 }
 
+func TestCalculateTextQuotaSummaryAppliesPersonalMultiplierToGroupPriceOverrides(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	t.Run("token prices", func(t *testing.T) {
+		override := &types.ModelGroupPricing{
+			PromptPrice:     testFloat64Ptr(0.1),
+			CompletionPrice: testFloat64Ptr(0.6),
+			CachePrice:      testFloat64Ptr(0.1),
+		}
+		relayInfo := &relaycommon.RelayInfo{
+			OriginModelName: "personal-token-pricing",
+			PriceData: types.PriceData{
+				ModelRatio:      99,
+				CompletionRatio: 99,
+				CacheRatio:      99,
+				GroupRatioInfo: types.GroupRatioInfo{
+					GroupRatio:                0.8,
+					UserGroupRatioOverride:    0.8,
+					HasUserGroupRatioOverride: true,
+					ModelGroupPricing:         override,
+					HasModelGroupPricing:      true,
+				},
+				GroupPriceOverride: override,
+			},
+			StartTime: time.Now(),
+		}
+		usage := &dto.Usage{
+			PromptTokens:     1_000_000,
+			CompletionTokens: 500_000,
+			PromptTokensDetails: dto.InputTokenDetails{
+				CachedTokens: 200_000,
+			},
+		}
+
+		summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+		require.Equal(t, 160000, summary.Quota)
+	})
+
+	t.Run("per request price", func(t *testing.T) {
+		override := &types.ModelGroupPricing{ModelPrice: testFloat64Ptr(0.25)}
+		relayInfo := &relaycommon.RelayInfo{
+			OriginModelName: "personal-request-pricing",
+			PriceData: types.PriceData{
+				UsePrice:   true,
+				ModelPrice: 99,
+				GroupRatioInfo: types.GroupRatioInfo{
+					GroupRatio:                0.8,
+					UserGroupRatioOverride:    0.8,
+					HasUserGroupRatioOverride: true,
+					ModelGroupPricing:         override,
+					HasModelGroupPricing:      true,
+				},
+				GroupPriceOverride: override,
+			},
+			StartTime: time.Now(),
+		}
+
+		summary := calculateTextQuotaSummary(ctx, relayInfo, &dto.Usage{PromptTokens: 1, TotalTokens: 1})
+
+		require.Equal(t, 100000, summary.Quota)
+	})
+}
+
 func TestCalculateTextQuotaSummaryUsesModelGroupPerRequestPriceOverride(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

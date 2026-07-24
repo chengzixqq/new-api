@@ -25,6 +25,10 @@ import { PerformanceSection } from '../maintenance/performance-section'
 import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import {
+  OPERATIONS_DEFAULT_SECTION,
+  type OPERATIONS_SECTION_IDS,
+} from '../section-route-config'
 
 const OPERATIONS_SECTIONS = [
   {
@@ -47,14 +51,6 @@ const OPERATIONS_SECTIONS = [
       <MonitoringSettingsSection
         defaultValues={{
           QuotaRemindThreshold: settings.QuotaRemindThreshold,
-          'perf_metrics_setting.enabled':
-            settings['perf_metrics_setting.enabled'] ?? true,
-          'perf_metrics_setting.flush_interval':
-            settings['perf_metrics_setting.flush_interval'] ?? 5,
-          'perf_metrics_setting.bucket_time':
-            settings['perf_metrics_setting.bucket_time'] ?? 'hour',
-          'perf_metrics_setting.retention_days':
-            settings['perf_metrics_setting.retention_days'] ?? 0,
         }}
       />
     ),
@@ -128,6 +124,36 @@ const OPERATIONS_SECTIONS = [
           UpstreamTraceSampleRate: Number(
             settings.UpstreamTraceSampleRate ?? 1
           ),
+          'global.sse_max_event_size_mb':
+            Number.isInteger(
+              Number(settings['global.sse_max_event_size_mb'])
+            ) &&
+            Number(settings['global.sse_max_event_size_mb']) >= 1 &&
+            Number(settings['global.sse_max_event_size_mb']) <= 128
+              ? Number(settings['global.sse_max_event_size_mb'])
+              : 'null',
+          'global.upstream_http_mode':
+            settings['global.upstream_http_mode'] === 'auto' ||
+            settings['global.upstream_http_mode'] === 'http1' ||
+            settings['global.upstream_http_mode'] === 'hybrid'
+              ? settings['global.upstream_http_mode']
+              : 'null',
+          'global.http2_connection_pool_size':
+            Number.isInteger(
+              Number(settings['global.http2_connection_pool_size'])
+            ) &&
+            Number(settings['global.http2_connection_pool_size']) >= 1 &&
+            Number(settings['global.http2_connection_pool_size']) <= 64
+              ? Number(settings['global.http2_connection_pool_size'])
+              : 'null',
+          'global.http1_body_threshold_kib':
+            Number.isInteger(
+              Number(settings['global.http1_body_threshold_kib'])
+            ) &&
+            Number(settings['global.http1_body_threshold_kib']) >= 64 &&
+            Number(settings['global.http1_body_threshold_kib']) <= 65536
+              ? Number(settings['global.http1_body_threshold_kib'])
+              : 'null',
         }}
       />
     ),
@@ -148,7 +174,7 @@ const OPERATIONS_SECTIONS = [
   },
 ] as const
 
-export type OperationsSectionId = (typeof OPERATIONS_SECTIONS)[number]['id']
+export type OperationsSectionId = (typeof OPERATIONS_SECTION_IDS)[number]
 
 const operationsRegistry = createSectionRegistry<
   OperationsSectionId,
@@ -156,14 +182,16 @@ const operationsRegistry = createSectionRegistry<
   [string | null | undefined, number | null | undefined]
 >({
   sections: OPERATIONS_SECTIONS,
-  defaultSection: 'behavior',
+  defaultSection: OPERATIONS_DEFAULT_SECTION,
   basePath: '/system-settings/operations',
   urlStyle: 'path',
 })
 
-export const OPERATIONS_SECTION_IDS = operationsRegistry.sectionIds
-export const OPERATIONS_DEFAULT_SECTION = operationsRegistry.defaultSection
 export const getOperationsSectionNavItems =
   operationsRegistry.getSectionNavItems
 export const getOperationsSectionContent = operationsRegistry.getSectionContent
+export {
+  OPERATIONS_DEFAULT_SECTION,
+  OPERATIONS_SECTION_IDS,
+} from '../section-route-config'
 export const getOperationsSectionMeta = operationsRegistry.getSectionMeta

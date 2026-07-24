@@ -26,8 +26,8 @@ import {
 import { quotaUnitsToDollars } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
 
-import { DEFAULT_GROUP } from '../constants'
-import { type UserFormData, type User } from '../types'
+import { DEFAULT_GROUP, USER_GROUP_RATIO_OVERRIDE_LIMITS } from '../constants'
+import type { User, UserFormData } from '../types'
 
 // ============================================================================
 // Form Schema
@@ -41,6 +41,21 @@ export const userFormSchema = z.object({
   quota_dollars: z.number().min(0).optional(),
   group: z.string().optional(),
   remark: z.string().optional(),
+  group_ratio_overrides: z
+    .record(z.string().min(1).max(64), z.number().finite().positive())
+    .refine(
+      (overrides) =>
+        Object.keys(overrides).length <=
+        USER_GROUP_RATIO_OVERRIDE_LIMITS.MAX_ENTRIES,
+      'Too many personal group pricing rules'
+    )
+    .refine(
+      (overrides) =>
+        Object.values(overrides).every(
+          (ratio) => ratio <= USER_GROUP_RATIO_OVERRIDE_LIMITS.MAX_RATIO
+        ),
+      'The multiplier must not exceed 1000'
+    ),
   admin_permissions: z
     .record(z.string(), z.record(z.string(), z.boolean()))
     .optional(),
@@ -60,6 +75,7 @@ export const USER_FORM_DEFAULT_VALUES: UserFormValues = {
   quota_dollars: 0,
   group: DEFAULT_GROUP,
   remark: '',
+  group_ratio_overrides: {},
   // Filled against the backend catalog at render time; see UsersMutateDrawer.
   admin_permissions: {},
 }
@@ -101,6 +117,7 @@ export function transformFormDataToPayload(
     // For update: quota is adjusted atomically via /api/user/manage, not sent here
     payload.group = data.group
     payload.remark = data.remark || undefined
+    payload.group_ratio_overrides = data.group_ratio_overrides
     payload.id = userId
   }
 
@@ -121,6 +138,7 @@ export function transformUserToFormDefaults(user: User): UserFormValues {
     quota_dollars: quotaUnitsToDollars(user.quota),
     group: user.group || DEFAULT_GROUP,
     remark: user.remark || '',
+    group_ratio_overrides: user.group_ratio_overrides ?? {},
     admin_permissions: user.admin_permissions ?? {},
   }
 }

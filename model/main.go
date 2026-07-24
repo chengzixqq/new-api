@@ -277,6 +277,8 @@ func migrateDB() error {
 		&Redemption{},
 		&Ability{},
 		&Log{},
+		&LogMinuteRollup{},
+		&LogRollupState{},
 		&Midjourney{},
 		&TopUp{},
 		&QuotaData{},
@@ -294,6 +296,10 @@ func migrateDB() error {
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
+		&PerfChannelMetric{},
+		&ModelHealthTarget{},
+		&ModelHealthHistory{},
+		&ModelHealthProbeToken{},
 		&SystemInstance{},
 		&SystemTask{},
 		&SystemTaskLock{},
@@ -302,6 +308,11 @@ func migrateDB() error {
 	)
 	if err != nil {
 		return err
+	}
+	if os.Getenv("LOG_SQL_DSN") == "" {
+		if err := DB.AutoMigrate(&LogRollupEvent{}); err != nil {
+			return err
+		}
 	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
 		if err := ensureSubscriptionPlanTableSQLite(); err != nil {
@@ -331,6 +342,8 @@ func migrateDBFast() error {
 		{&Redemption{}, "Redemption"},
 		{&Ability{}, "Ability"},
 		{&Log{}, "Log"},
+		{&LogMinuteRollup{}, "LogMinuteRollup"},
+		{&LogRollupState{}, "LogRollupState"},
 		{&Midjourney{}, "Midjourney"},
 		{&TopUp{}, "TopUp"},
 		{&QuotaData{}, "QuotaData"},
@@ -348,6 +361,10 @@ func migrateDBFast() error {
 		{&CustomOAuthProvider{}, "CustomOAuthProvider"},
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
 		{&PerfMetric{}, "PerfMetric"},
+		{&PerfChannelMetric{}, "PerfChannelMetric"},
+		{&ModelHealthTarget{}, "ModelHealthTarget"},
+		{&ModelHealthHistory{}, "ModelHealthHistory"},
+		{&ModelHealthProbeToken{}, "ModelHealthProbeToken"},
 		{&SystemInstance{}, "SystemInstance"},
 		{&SystemTask{}, "SystemTask"},
 		{&SystemTaskLock{}, "SystemTaskLock"},
@@ -375,6 +392,11 @@ func migrateDBFast() error {
 			return err
 		}
 	}
+	if os.Getenv("LOG_SQL_DSN") == "" {
+		if err := DB.AutoMigrate(&LogRollupEvent{}); err != nil {
+			return err
+		}
+	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
 		if err := ensureSubscriptionPlanTableSQLite(); err != nil {
 			return err
@@ -392,7 +414,7 @@ func migrateLOGDB() error {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		return migrateClickHouseLogDB()
 	}
-	return LOG_DB.AutoMigrate(&Log{})
+	return LOG_DB.AutoMigrate(&Log{}, &LogRollupEvent{})
 }
 
 func migrateClickHouseLogDB() error {

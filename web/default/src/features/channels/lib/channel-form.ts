@@ -205,10 +205,16 @@ export const channelFormSchema = z
     allow_speed: z.boolean().optional(), // Anthropic: speed mode control
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     disable_task_polling_sleep: z.boolean().optional(),
+    task_polling_concurrency: z.number().int().min(1).max(16).optional(),
+    task_polling_interval_ms: z.number().int().min(0).max(60000).optional(),
+    sse_max_event_size_mb: z.number().int().min(1).max(128).optional(),
     cowork_adaptive_thinking_fix: z.boolean().optional(), // Anthropic: Cowork adaptive thinking signature fix
     upstream_warmup_enabled: z.boolean().optional(),
     upstream_trace_enabled: z.boolean().optional(),
     force_http1: z.boolean().optional(),
+    upstream_http_mode: z.enum(['auto', 'http1', 'hybrid']).optional(),
+    http2_connection_pool_size: z.number().int().min(1).max(64).optional(),
+    http1_body_threshold_kib: z.number().int().min(64).max(65536).optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
@@ -349,10 +355,16 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   allow_speed: false,
   claude_beta_query: false,
   disable_task_polling_sleep: false,
+  task_polling_concurrency: undefined,
+  task_polling_interval_ms: undefined,
+  sse_max_event_size_mb: undefined,
   cowork_adaptive_thinking_fix: false,
   upstream_warmup_enabled: false,
   upstream_trace_enabled: false,
   force_http1: false,
+  upstream_http_mode: undefined,
+  http2_connection_pool_size: undefined,
+  http1_body_threshold_kib: undefined,
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -377,6 +389,7 @@ export function transformChannelToFormDefaults(
     pass_through_body_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
+    sse_max_event_size_mb: undefined as number | undefined,
   }
 
   if (channel.setting) {
@@ -389,6 +402,12 @@ export function transformChannelToFormDefaults(
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
+        sse_max_event_size_mb:
+          Number.isInteger(parsed.sse_max_event_size_mb) &&
+          parsed.sse_max_event_size_mb >= 1 &&
+          parsed.sse_max_event_size_mb <= 128
+            ? parsed.sse_max_event_size_mb
+            : undefined,
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -409,10 +428,15 @@ export function transformChannelToFormDefaults(
   let allowSpeed = false
   let claudeBetaQuery = false
   let disableTaskPollingSleep = false
+  let taskPollingConcurrency: number | undefined
+  let taskPollingIntervalMs: number | undefined
   let coworkAdaptiveThinkingFix = false
   let upstreamWarmupEnabled = false
   let upstreamTraceEnabled = false
   let forceHttp1 = false
+  let upstreamHttpMode: 'auto' | 'http1' | 'hybrid' | undefined
+  let http2ConnectionPoolSize: number | undefined
+  let http1BodyThresholdKiB: number | undefined
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
@@ -433,10 +457,46 @@ export function transformChannelToFormDefaults(
       allowSpeed = parsed.allow_speed === true
       claudeBetaQuery = parsed.claude_beta_query === true
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
+      taskPollingConcurrency =
+        Number.isInteger(parsed.task_polling_concurrency) &&
+        parsed.task_polling_concurrency >= 1 &&
+        parsed.task_polling_concurrency <= 16
+          ? parsed.task_polling_concurrency
+          : undefined
+      taskPollingIntervalMs =
+        Number.isInteger(parsed.task_polling_interval_ms) &&
+        parsed.task_polling_interval_ms >= 0 &&
+        parsed.task_polling_interval_ms <= 60000
+          ? parsed.task_polling_interval_ms
+          : undefined
       coworkAdaptiveThinkingFix = parsed.cowork_adaptive_thinking_fix === true
       upstreamWarmupEnabled = parsed.upstream_warmup_enabled === true
       upstreamTraceEnabled = parsed.upstream_trace_enabled === true
-      forceHttp1 = parsed.force_http1 === true
+      const parsedUpstreamHttpMode = parsed.upstream_http_mode
+      if (
+        parsedUpstreamHttpMode === 'auto' ||
+        parsedUpstreamHttpMode === 'http1' ||
+        parsedUpstreamHttpMode === 'hybrid'
+      ) {
+        upstreamHttpMode = parsedUpstreamHttpMode
+      } else if (parsed.force_http1 === true) {
+        // Promote the legacy flag into the new form control. Saving the form
+        // keeps both fields so old images can still be used for rollback.
+        upstreamHttpMode = 'http1'
+      }
+      forceHttp1 = upstreamHttpMode === 'http1'
+      http2ConnectionPoolSize =
+        Number.isInteger(parsed.http2_connection_pool_size) &&
+        parsed.http2_connection_pool_size >= 1 &&
+        parsed.http2_connection_pool_size <= 64
+          ? parsed.http2_connection_pool_size
+          : undefined
+      http1BodyThresholdKiB =
+        Number.isInteger(parsed.http1_body_threshold_kib) &&
+        parsed.http1_body_threshold_kib >= 64 &&
+        parsed.http1_body_threshold_kib <= 65536
+          ? parsed.http1_body_threshold_kib
+          : undefined
       upstreamModelUpdateCheckEnabled =
         parsed.upstream_model_update_check_enabled === true
       upstreamModelUpdateAutoSyncEnabled =
@@ -495,10 +555,15 @@ export function transformChannelToFormDefaults(
     allow_speed: allowSpeed,
     claude_beta_query: claudeBetaQuery,
     disable_task_polling_sleep: disableTaskPollingSleep,
+    task_polling_concurrency: taskPollingConcurrency,
+    task_polling_interval_ms: taskPollingIntervalMs,
     cowork_adaptive_thinking_fix: coworkAdaptiveThinkingFix,
     upstream_warmup_enabled: upstreamWarmupEnabled,
     upstream_trace_enabled: upstreamTraceEnabled,
     force_http1: forceHttp1,
+    upstream_http_mode: upstreamHttpMode,
+    http2_connection_pool_size: http2ConnectionPoolSize,
+    http1_body_threshold_kib: http1BodyThresholdKiB,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
@@ -518,6 +583,9 @@ function buildSettingJSON(formData: ChannelFormValues): string {
     pass_through_body_enabled: formData.pass_through_body_enabled || false,
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
+    ...(formData.sse_max_event_size_mb === undefined
+      ? {}
+      : { sse_max_event_size_mb: formData.sse_max_event_size_mb }),
   }
   return JSON.stringify(settingObj)
 }
@@ -583,13 +651,18 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       formData.allow_include_obfuscation === true
     settingsObj.allow_inference_geo = formData.allow_inference_geo === true
   } else {
-    if ('disable_store' in settingsObj) delete settingsObj.disable_store
-    if ('allow_safety_identifier' in settingsObj)
+    if ('disable_store' in settingsObj) {
+      delete settingsObj.disable_store
+    }
+    if ('allow_safety_identifier' in settingsObj) {
       delete settingsObj.allow_safety_identifier
-    if ('allow_include_obfuscation' in settingsObj)
+    }
+    if ('allow_include_obfuscation' in settingsObj) {
       delete settingsObj.allow_include_obfuscation
-    if (formData.type !== 14 && 'allow_inference_geo' in settingsObj)
+    }
+    if (formData.type !== 14 && 'allow_inference_geo' in settingsObj) {
       delete settingsObj.allow_inference_geo
+    }
   }
 
   // Anthropic (type 14): claude_beta_query, allow_inference_geo, allow_speed, cowork_adaptive_thinking_fix
@@ -600,21 +673,59 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.cowork_adaptive_thinking_fix =
       formData.cowork_adaptive_thinking_fix === true
   } else {
-    if ('allow_speed' in settingsObj) delete settingsObj.allow_speed
-    if ('claude_beta_query' in settingsObj) delete settingsObj.claude_beta_query
-    if ('cowork_adaptive_thinking_fix' in settingsObj)
+    if ('allow_speed' in settingsObj) {
+      delete settingsObj.allow_speed
+    }
+    if ('claude_beta_query' in settingsObj) {
+      delete settingsObj.claude_beta_query
+    }
+    if ('cowork_adaptive_thinking_fix' in settingsObj) {
       delete settingsObj.cowork_adaptive_thinking_fix
+    }
   }
 
-  settingsObj.disable_task_polling_sleep =
-    formData.disable_task_polling_sleep === true
+  if (formData.task_polling_concurrency === undefined) {
+    delete settingsObj.task_polling_concurrency
+  } else {
+    settingsObj.task_polling_concurrency = formData.task_polling_concurrency
+  }
+
+  if (formData.task_polling_interval_ms === undefined) {
+    delete settingsObj.task_polling_interval_ms
+    settingsObj.disable_task_polling_sleep =
+      formData.disable_task_polling_sleep === true
+  } else {
+    settingsObj.task_polling_interval_ms = formData.task_polling_interval_ms
+    delete settingsObj.disable_task_polling_sleep
+  }
 
   settingsObj.upstream_warmup_enabled =
     formData.upstream_warmup_enabled === true
 
   settingsObj.upstream_trace_enabled = formData.upstream_trace_enabled === true
 
-  settingsObj.force_http1 = formData.force_http1 === true
+  if (formData.upstream_http_mode === undefined) {
+    delete settingsObj.upstream_http_mode
+  } else {
+    settingsObj.upstream_http_mode = formData.upstream_http_mode
+  }
+
+  if (formData.http2_connection_pool_size === undefined) {
+    delete settingsObj.http2_connection_pool_size
+  } else {
+    settingsObj.http2_connection_pool_size = formData.http2_connection_pool_size
+  }
+
+  if (formData.http1_body_threshold_kib === undefined) {
+    delete settingsObj.http1_body_threshold_kib
+  } else {
+    settingsObj.http1_body_threshold_kib = formData.http1_body_threshold_kib
+  }
+
+  // Keep the legacy flag in sync only for explicit HTTP/1.1 mode. This makes
+  // rollback to an older image safe without letting the legacy flag override
+  // inherited/auto/hybrid behavior.
+  settingsObj.force_http1 = formData.upstream_http_mode === 'http1'
 
   // Upstream model update settings (for model-fetchable channel types)
   if (MODEL_FETCHABLE_TYPES.has(formData.type)) {
@@ -623,14 +734,14 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.upstream_model_update_auto_sync_enabled =
       settingsObj.upstream_model_update_check_enabled === true &&
       formData.upstream_model_update_auto_sync_enabled === true
-    settingsObj.upstream_model_update_ignored_models = Array.from(
-      new Set(
+    settingsObj.upstream_model_update_ignored_models = [
+      ...new Set(
         String(formData.upstream_model_update_ignored_models || '')
           .split(',')
           .map((model) => model.trim())
           .filter(Boolean)
-      )
-    )
+      ),
+    ]
     if (
       !Array.isArray(settingsObj.upstream_model_update_last_detected_models) ||
       settingsObj.upstream_model_update_check_enabled !== true

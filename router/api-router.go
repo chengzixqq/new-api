@@ -22,7 +22,6 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/setup", controller.GetSetup)
 		apiRouter.POST("/setup", anonymousRequestBodyLimit, controller.PostSetup)
 		apiRouter.GET("/status", controller.GetStatus)
-		apiRouter.GET("/uptime/status", controller.GetUptimeKumaStatus)
 		apiRouter.GET("/models", middleware.UserAuth(), controller.DashboardListModels)
 		apiRouter.GET("/status/test", middleware.AdminAuth(), controller.TestStatus)
 		apiRouter.GET("/notice", controller.GetNotice)
@@ -39,6 +38,27 @@ func SetApiRouter(router *gin.Engine) {
 			perfMetricsRoute.GET("", controller.GetPerfMetrics)
 		}
 		apiRouter.GET("/rankings", middleware.HeaderNavModuleAuth("rankings"), controller.GetRankings)
+		modelHealthRoute := apiRouter.Group("/model-health")
+		modelHealthRoute.Use(middleware.HeaderNavModuleAuth("health"))
+		{
+			modelHealthRoute.GET("/catalog", controller.GetModelHealthCatalog)
+			modelHealthRoute.GET("/overview", controller.GetModelHealthOverview)
+			modelHealthRoute.GET("/series", controller.GetModelHealthSeries)
+		}
+		modelHealthAdminRoute := apiRouter.Group("/model-health/admin")
+		modelHealthAdminRoute.Use(middleware.RootAuth())
+		{
+			modelHealthAdminRoute.GET("/options", controller.AdminGetModelHealthOptions)
+			modelHealthAdminRoute.GET("/probe-tokens", controller.AdminListModelHealthProbeTokens)
+			modelHealthAdminRoute.PUT("/probe-tokens/:id", controller.AdminUpdateModelHealthProbeToken)
+			modelHealthAdminRoute.GET("/targets", controller.AdminListModelHealthTargets)
+			modelHealthAdminRoute.POST("/targets", controller.AdminCreateModelHealthTarget)
+			modelHealthAdminRoute.POST("/targets/validate", controller.AdminValidateModelHealthTarget)
+			modelHealthAdminRoute.PUT("/targets/:id", controller.AdminUpdateModelHealthTarget)
+			modelHealthAdminRoute.DELETE("/targets/:id", controller.AdminDeleteModelHealthTarget)
+			modelHealthAdminRoute.POST("/targets/:id/run", controller.AdminRunModelHealthTarget)
+			modelHealthAdminRoute.POST("/run", controller.AdminRunAllModelHealthTargets)
+		}
 		apiRouter.GET("/verification", middleware.EmailVerificationRateLimit(), middleware.TurnstileCheck(), controller.SendEmailVerification)
 		apiRouter.GET("/reset_password", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.SendPasswordResetEmail)
 		apiRouter.POST("/user/reset", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ResetPassword)

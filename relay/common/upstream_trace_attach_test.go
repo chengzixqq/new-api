@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/stretchr/testify/require"
 )
 
 // AttachUpstreamTrace, when enabled, must record connection facts, request-write
@@ -148,4 +149,27 @@ func TestAttachUpstreamTrace_GlobalAndChannelOffNoOp(t *testing.T) {
 	if out != req || info.UpstreamTrace != nil {
 		t.Error("global off + channel off must be a no-op")
 	}
+}
+
+func TestAttachUpstreamTraceClearsPreviousRetryAttempt(t *testing.T) {
+	common.UpstreamTraceEnabled.Store(false)
+	info := &RelayInfo{UpstreamTrace: &UpstreamTraceInfo{Enabled: true}}
+	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+	require.NoError(t, err)
+
+	out := AttachUpstreamTrace(req, info)
+	require.Same(t, req, out)
+	require.Nil(t, info.UpstreamTrace)
+}
+
+func TestTransportSelectionPreservesZeroShardLoadInJSON(t *testing.T) {
+	trace := &UpstreamTraceInfo{}
+	trace.SetTransportSelection("auto", 16, 1, 0, 0)
+
+	encoded, err := common.Marshal(trace)
+	require.NoError(t, err)
+	var fields map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &fields))
+	require.EqualValues(t, 0, fields["h2_shard_active_at_pick"])
+	require.EqualValues(t, 0, fields["h2_pending_upload_bytes_at_pick"])
 }

@@ -26,6 +26,9 @@ import {
 
 import type { UsageLog } from '../data/schema'
 import type { LogOtherData } from '../types'
+import { parseLogOther } from './log-data'
+
+export { parseLogOther } from './log-data'
 
 export { normalizeTierLabel }
 
@@ -93,20 +96,6 @@ export function isViolationFeeLog(other: LogOtherData | null): boolean {
 }
 
 /**
- * Parse the 'other' field from JSON string to object
- */
-export function parseLogOther(other: string): LogOtherData | null {
-  if (!other) return null
-  try {
-    return JSON.parse(other) as LogOtherData
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to parse log other field:', error)
-    return null
-  }
-}
-
-/**
  * Get time color based on duration (in seconds)
  */
 export function getTimeColor(
@@ -153,12 +142,14 @@ export function getResponseTimeColor(
 /**
  * Format model name with mapping indicator
  */
-export function formatModelName(log: UsageLog): {
+export function formatModelName(
+  log: UsageLog,
+  other: LogOtherData | null = parseLogOther(log.other)
+): {
   name: string
   isMapped: boolean
   actualModel?: string
 } {
-  const other = parseLogOther(log.other)
   const isMapped = !!(
     other?.is_model_mapped &&
     other?.upstream_model_name &&
@@ -195,7 +186,7 @@ export function decodeBillingExprB64(exprB64: string | undefined): string {
 
     return decodeURIComponent(
       Array.prototype.map
-        .call(bytes, (byte: number) => '%' + byte.toString(16).padStart(2, '0'))
+        .call(bytes, (byte: number) => `%${byte.toString(16).padStart(2, '0')}`)
         .join('')
     )
   } catch {

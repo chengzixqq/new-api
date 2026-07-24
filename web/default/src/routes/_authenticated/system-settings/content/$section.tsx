@@ -22,12 +22,18 @@ import { ContentSettings } from '@/features/system-settings/content'
 import {
   CONTENT_DEFAULT_SECTION,
   CONTENT_SECTION_IDS,
-} from '@/features/system-settings/content/section-registry.tsx'
+} from '@/features/system-settings/section-route-config'
 
 export const Route = createFileRoute(
   '/_authenticated/system-settings/content/$section'
 )({
   beforeLoad: ({ params }) => {
+    if (params.section === 'uptime-kuma') {
+      throw redirect({
+        to: '/system-settings/content/$section',
+        params: { section: 'model-health' },
+      })
+    }
     const validSections = CONTENT_SECTION_IDS as unknown as string[]
     if (!validSections.includes(params.section)) {
       throw redirect({

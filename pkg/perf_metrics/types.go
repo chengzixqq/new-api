@@ -25,20 +25,34 @@ type QueryParams struct {
 }
 
 type BucketPoint struct {
-	Ts           int64   `json:"ts"`
-	AvgTtftMs    int64   `json:"avg_ttft_ms"`
-	AvgLatencyMs int64   `json:"avg_latency_ms"`
-	SuccessRate  float64 `json:"success_rate"`
-	AvgTps       float64 `json:"avg_tps"`
+	Ts             int64   `json:"ts"`
+	RequestCount   int64   `json:"request_count"`
+	SuccessCount   int64   `json:"success_count"`
+	TotalLatencyMs int64   `json:"total_latency_ms"`
+	TtftSumMs      int64   `json:"ttft_sum_ms"`
+	TtftCount      int64   `json:"ttft_count"`
+	OutputTokens   int64   `json:"output_tokens"`
+	GenerationMs   int64   `json:"generation_ms"`
+	AvgTtftMs      int64   `json:"avg_ttft_ms"`
+	AvgLatencyMs   int64   `json:"avg_latency_ms"`
+	SuccessRate    float64 `json:"success_rate"`
+	AvgTps         float64 `json:"avg_tps"`
 }
 
 type GroupResult struct {
-	Group        string        `json:"group"`
-	AvgTtftMs    int64         `json:"avg_ttft_ms"`
-	AvgLatencyMs int64         `json:"avg_latency_ms"`
-	SuccessRate  float64       `json:"success_rate"`
-	AvgTps       float64       `json:"avg_tps"`
-	Series       []BucketPoint `json:"series"`
+	Group          string        `json:"group"`
+	RequestCount   int64         `json:"request_count"`
+	SuccessCount   int64         `json:"success_count"`
+	TotalLatencyMs int64         `json:"total_latency_ms"`
+	TtftSumMs      int64         `json:"ttft_sum_ms"`
+	TtftCount      int64         `json:"ttft_count"`
+	OutputTokens   int64         `json:"output_tokens"`
+	GenerationMs   int64         `json:"generation_ms"`
+	AvgTtftMs      int64         `json:"avg_ttft_ms"`
+	AvgLatencyMs   int64         `json:"avg_latency_ms"`
+	SuccessRate    float64       `json:"success_rate"`
+	AvgTps         float64       `json:"avg_tps"`
+	Series         []BucketPoint `json:"series"`
 }
 
 type QueryResult struct {
@@ -53,17 +67,84 @@ type ModelSummary struct {
 	SuccessRate        float64   `json:"success_rate"`
 	AvgTps             float64   `json:"avg_tps"`
 	RecentSuccessRates []float64 `json:"recent_success_rates,omitempty"`
-	RequestCount       int64     `json:"-"`
+	RequestCount       int64     `json:"request_count,omitempty"`
 }
 
 type SummaryAllResult struct {
 	Models []ModelSummary `json:"models"`
 }
 
+// MatrixParams selects passive metrics across the model x group plane. The
+// output bucket size is independent of the storage bucket and is used for
+// 7-day/30-day downsampling on the public health page.
+type MatrixParams struct {
+	Models        []string
+	Groups        []string
+	Hours         int
+	BucketSeconds int64
+}
+
+// ChannelMatrixParams selects real upstream-attempt metrics across the
+// channel x model x group dimensions.
+type ChannelMatrixParams struct {
+	ChannelIDs    []int
+	Models        []string
+	Groups        []string
+	Hours         int
+	BucketSeconds int64
+}
+
+type MatrixPoint struct {
+	Ts             int64   `json:"ts"`
+	RequestCount   int64   `json:"request_count"`
+	SuccessCount   int64   `json:"success_count"`
+	TotalLatencyMs int64   `json:"total_latency_ms"`
+	TtftSumMs      int64   `json:"ttft_sum_ms"`
+	TtftCount      int64   `json:"ttft_count"`
+	OutputTokens   int64   `json:"output_tokens"`
+	GenerationMs   int64   `json:"generation_ms"`
+	SuccessRate    float64 `json:"success_rate"`
+	AvgLatencyMs   int64   `json:"avg_latency_ms"`
+	AvgTtftMs      int64   `json:"avg_ttft_ms"`
+	AvgTps         float64 `json:"avg_tps"`
+}
+
+type MatrixCell struct {
+	ChannelID      int           `json:"-"`
+	Model          string        `json:"model"`
+	Group          string        `json:"group"`
+	RequestCount   int64         `json:"request_count"`
+	SuccessCount   int64         `json:"success_count"`
+	TotalLatencyMs int64         `json:"total_latency_ms"`
+	TtftSumMs      int64         `json:"ttft_sum_ms"`
+	TtftCount      int64         `json:"ttft_count"`
+	OutputTokens   int64         `json:"output_tokens"`
+	GenerationMs   int64         `json:"generation_ms"`
+	SuccessRate    float64       `json:"success_rate"`
+	AvgLatencyMs   int64         `json:"avg_latency_ms"`
+	AvgTtftMs      int64         `json:"avg_ttft_ms"`
+	AvgTps         float64       `json:"avg_tps"`
+	Series         []MatrixPoint `json:"series"`
+}
+
+type MatrixResult struct {
+	StartTs       int64        `json:"start_ts"`
+	EndTs         int64        `json:"end_ts"`
+	BucketSeconds int64        `json:"bucket_seconds"`
+	Cells         []MatrixCell `json:"cells"`
+}
+
 type bucketKey struct {
 	model    string
 	group    string
 	bucketTs int64
+}
+
+type channelBucketKey struct {
+	channelID int
+	model     string
+	group     string
+	bucketTs  int64
 }
 
 type counters struct {

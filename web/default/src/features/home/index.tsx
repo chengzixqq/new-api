@@ -16,18 +16,41 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useCallback, useEffect, useRef } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { PublicLayout } from '@/components/layout'
 import { Footer } from '@/components/layout/components/footer'
-import { RichContent } from '@/components/rich-content'
+import { PublicLayout } from '@/components/layout/components/public-layout'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useTheme } from '@/context/theme-provider'
 import { isLikelyHtml } from '@/lib/content-format'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { CTA, Features, Hero, HowItWorks, Stats } from './components'
+import { CTA } from './components/sections/cta'
+import { Features } from './components/sections/features'
+import { Hero } from './components/sections/hero'
+import { HowItWorks } from './components/sections/how-it-works'
+import { Stats } from './components/sections/stats'
 import { useHomePageContent } from './hooks'
+
+const RichContent = lazy(() =>
+  import('@/components/rich-content').then((module) => ({
+    default: module.RichContent,
+  }))
+)
+
+function HomeContentFallback() {
+  return (
+    <div
+      className='mx-auto min-h-[50vh] w-full max-w-6xl space-y-4 px-4 py-8'
+      aria-busy='true'
+    >
+      <Skeleton className='h-8 w-2/5' />
+      <Skeleton className='h-4 w-full' />
+      <Skeleton className='h-4 w-4/5' />
+    </div>
+  )
+}
 
 export function Home() {
   const { i18n, t } = useTranslation()
@@ -97,12 +120,14 @@ export function Home() {
     if (contentIsHtml) {
       return (
         <PublicLayout showMainContainer={false}>
-          <RichContent
-            mode='html'
-            htmlVariant='isolated'
-            content={content}
-            className='custom-home-content'
-          />
+          <Suspense fallback={<HomeContentFallback />}>
+            <RichContent
+              mode='html'
+              htmlVariant='isolated'
+              content={content}
+              className='custom-home-content'
+            />
+          </Suspense>
         </PublicLayout>
       )
     }
@@ -110,11 +135,13 @@ export function Home() {
     return (
       <PublicLayout>
         <div className='mx-auto max-w-6xl px-4 py-8'>
-          <RichContent
-            mode='markdown'
-            content={content}
-            className='custom-home-content'
-          />
+          <Suspense fallback={<HomeContentFallback />}>
+            <RichContent
+              mode='markdown'
+              content={content}
+              className='custom-home-content'
+            />
+          </Suspense>
         </div>
       </PublicLayout>
     )

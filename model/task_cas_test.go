@@ -14,6 +14,15 @@ import (
 	"gorm.io/gorm"
 )
 
+type legacyTaskBillingMigration struct {
+	ID       int64      `gorm:"primaryKey"`
+	Status   TaskStatus `gorm:"type:varchar(20)"`
+	Progress string
+	Quota    int
+}
+
+func (legacyTaskBillingMigration) TableName() string { return "tasks" }
+
 func TestMain(m *testing.M) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -48,6 +57,7 @@ func TestMain(m *testing.M) {
 		&UserSubscription{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
+		&PerfChannelMetric{},
 		&SystemInstance{},
 		&SystemTask{},
 		&SystemTaskLock{},
@@ -243,4 +253,67 @@ func TestUpdateWithStatus_ConcurrentWinner(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, winCount, "exactly one goroutine should win the CAS")
+}
+
+func TestFinalizeTaskBillingPreservesOmittedTerminalFields(t *testing.T) {
+	truncateTables(t)
+
+	task := &Task{
+		TaskID:        "task_preserve_terminal_fields",
+		Status:        TaskStatusInProgress,
+		Progress:      "75%",
+		StartTime:     1234,
+		FinishTime:    5678,
+		FailReason:    "existing detail",
+		BillingStatus: TaskBillingStatusReserved,
+		PrivateData: TaskPrivateData{
+			ResultURL: "https://example.com/existing.mp4",
+		},
+		Data: json.RawMessage(`{"existing":true}`),
+	}
+	insertTask(t, task)
+
+	result, err := FinalizeTaskBilling(&Task{ID: task.ID, Status: TaskStatusSuccess}, 0)
+	require.NoError(t, err)
+	require.True(t, result.Applied)
+
+	var persisted Task
+	require.NoError(t, DB.First(&persisted, task.ID).Error)
+	assert.Equal(t, int64(1234), persisted.StartTime)
+	assert.Equal(t, int64(5678), persisted.FinishTime)
+	assert.Equal(t, "existing detail", persisted.FailReason)
+	assert.Equal(t, "75%", persisted.Progress)
+	assert.Equal(t, "https://example.com/existing.mp4", persisted.PrivateData.ResultURL)
+	assert.JSONEq(t, `{"existing":true}`, string(persisted.Data))
+}
+
+func TestTaskBillingFieldsMigrateLegacyRowsWithoutReplay(t *testing.T) {
+	legacyDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, legacyDB.AutoMigrate(&legacyTaskBillingMigration{}))
+	require.NoError(t, legacyDB.Create(&legacyTaskBillingMigration{
+		ID: 1, Status: TaskStatusInProgress, Progress: "50%", Quota: 0,
+	}).Error)
+	require.NoError(t, legacyDB.Create(&legacyTaskBillingMigration{
+		ID: 2, Status: TaskStatusFailure, Progress: "100%", Quota: 1000,
+	}).Error)
+	require.NoError(t, legacyDB.AutoMigrate(&Task{}))
+
+	originalDB := DB
+	DB = legacyDB
+	t.Cleanup(func() { DB = originalDB })
+
+	var active Task
+	require.NoError(t, DB.First(&active, 1).Error)
+	assert.Empty(t, active.BillingStatus)
+	result, err := FinalizeTaskBilling(&Task{ID: active.ID, Status: TaskStatusSuccess, Progress: "100%"}, 0)
+	require.NoError(t, err)
+	assert.True(t, result.Applied)
+
+	var terminal Task
+	require.NoError(t, DB.First(&terminal, 2).Error)
+	assert.Empty(t, terminal.BillingStatus)
+	result, err = FinalizeTaskBilling(&Task{ID: terminal.ID, Status: TaskStatusFailure}, 0)
+	require.NoError(t, err)
+	assert.False(t, result.Applied, "legacy terminal rows must not be refunded again")
 }

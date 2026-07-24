@@ -83,7 +83,9 @@ export function UserAuthForm({
     isTurnstileEnabled,
     turnstileSiteKey,
     turnstileToken,
+    turnstileResetKey,
     setTurnstileToken,
+    resetTurnstile,
     validateTurnstile,
   } = useTurnstile()
   const { handleLoginSuccess, redirectTo2FA } = useAuthRedirect()
@@ -172,6 +174,7 @@ export function UserAuthForm({
       // Errors are handled by global interceptor
     } finally {
       setIsLoading(false)
+      resetTurnstile()
     }
   }
 
@@ -386,6 +389,7 @@ export function UserAuthForm({
             {isTurnstileEnabled && (
               <div className='mt-2'>
                 <Turnstile
+                  key={turnstileResetKey}
                   siteKey={turnstileSiteKey}
                   onVerify={setTurnstileToken}
                 />

@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { TFunction } from 'i18next'
 import {
   Copy,
   Check,
@@ -32,7 +33,6 @@ import {
   Timer,
   LogIn,
 } from 'lucide-react'
-import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -48,7 +48,6 @@ import { cn } from '@/lib/utils'
 
 import type { UsageLog } from '../../data/schema'
 import {
-  parseLogOther,
   getParamOverrideActionLabel,
   parseAuditLine,
   decodeBillingExprB64,
@@ -59,6 +58,11 @@ import {
   getResponseTimeColor,
   renderAuditContent,
 } from '../../lib/format'
+import {
+  getLogGroupRatioLabelKey,
+  resolveLogGroupRatio,
+} from '../../lib/group-ratio'
+import type { PreparedUsageLog } from '../../lib/log-data'
 import {
   getLogTypeConfig,
   isPerCallBilling,
@@ -180,7 +184,9 @@ function getUsageBillingPathLabel(
   }
 }
 
-function isUsageBillingPathLocal(adminInfo: LogOtherData['admin_info']): boolean {
+function isUsageBillingPathLocal(
+  adminInfo: LogOtherData['admin_info']
+): boolean {
   if (adminInfo?.usage_billing_path) {
     return adminInfo.usage_billing_path === USAGE_BILLING_PATH.LOCAL
   }
@@ -261,13 +267,11 @@ function BillingBreakdown(props: {
     }
   }
 
-  const userGR = other.user_group_ratio
-  const isUserGR = userGR != null && Number.isFinite(userGR) && userGR !== -1
-  const effectiveGR = isUserGR ? userGR : other.group_ratio
-  if (effectiveGR != null && Number.isFinite(effectiveGR)) {
+  const effectiveGR = resolveLogGroupRatio(other)
+  if (effectiveGR) {
     rows.push({
-      label: isUserGR ? t('User Exclusive Ratio') : t('Group Ratio'),
-      value: `${formatRatio(effectiveGR)}x`,
+      label: t(getLogGroupRatioLabelKey(effectiveGR.kind)),
+      value: `${formatRatio(effectiveGR.ratio)}x`,
     })
   }
 
@@ -458,7 +462,7 @@ function formatTraceBytes(bytes: number): string {
     sizes.length - 1,
     Math.floor(Math.log(bytes) / Math.log(k))
   )
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`
+  return `${Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`
 }
 
 function formatTraceMs(ms: number): string {
@@ -474,6 +478,48 @@ function UpstreamTraceSection(props: { other: LogOtherData }) {
 
   // Connection group
   const connectionRows: TraceRow[] = []
+  if (trace.transport_mode) {
+    let transportModeLabel = t('Automatic (HTTP/2 preferred)')
+    if (trace.transport_mode === 'http1') {
+      transportModeLabel = t('HTTP/1.1 only')
+    } else if (trace.transport_mode === 'hybrid') {
+      transportModeLabel = t('Hybrid by request size')
+    }
+    connectionRows.push({
+      label: t('Configured transport mode'),
+      value: transportModeLabel,
+    })
+  }
+  if (trace.http_protocol) {
+    connectionRows.push({
+      label: t('Negotiated HTTP protocol'),
+      value: trace.http_protocol,
+    })
+  }
+  if (trace.h2_pool_size != null) {
+    connectionRows.push({
+      label: t('HTTP/2 pool size'),
+      value: String(trace.h2_pool_size),
+    })
+  }
+  if (trace.h2_shard != null) {
+    connectionRows.push({
+      label: t('HTTP/2 shard'),
+      value: String(trace.h2_shard),
+    })
+  }
+  if (trace.h2_shard_active_at_pick != null) {
+    connectionRows.push({
+      label: t('Shard active requests at selection'),
+      value: String(trace.h2_shard_active_at_pick),
+    })
+  }
+  if (trace.h2_pending_upload_bytes_at_pick != null) {
+    connectionRows.push({
+      label: t('Pending upload at selection'),
+      value: formatTraceBytes(trace.h2_pending_upload_bytes_at_pick),
+    })
+  }
   connectionRows.push({
     label: t('Reused connection'),
     value: trace.reused_conn ? t('Yes') : t('No'),
@@ -587,9 +633,9 @@ function UpstreamTraceSection(props: { other: LogOtherData }) {
           <p className='text-muted-foreground text-[11px] font-medium uppercase'>
             {group.title}
           </p>
-          {group.rows.map((row, idx) => (
+          {group.rows.map((row) => (
             <DetailRow
-              key={`${group.title}-${idx}`}
+              key={`${group.title}-${row.label}`}
               label={row.label}
               value={row.value}
               mono
@@ -608,7 +654,7 @@ function UpstreamTraceSection(props: { other: LogOtherData }) {
 }
 
 interface DetailsDialogProps {
-  log: UsageLog
+  log: PreparedUsageLog
   isAdmin: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -618,7 +664,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const details = props.log.content ?? ''
-  const other = parseLogOther(props.log.other)
+  const other = props.log.parsedOther
   const typeConfig = getLogTypeConfig(props.log.type)
 
   const isViolation = isViolationFeeLog(other)
@@ -808,7 +854,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
                   )}
                 </span>
               }
-              />
+            />
           )}
 
           {channelChain && props.isAdmin && (
@@ -1223,10 +1269,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
         )}
 
         {/* Admin billing mode indicator for non-consume */}
-          {props.isAdmin &&
-            !isConsume &&
-            props.log.type !== 6 &&
-            other?.admin_info && (
+        {props.isAdmin &&
+          !isConsume &&
+          props.log.type !== 6 &&
+          other?.admin_info && (
             <DetailRow
               label={t('Billing Path')}
               value={
@@ -1244,14 +1290,14 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
-          {/* Upstream segmented timing (httptrace, admin only) */}
-          {props.isAdmin && other?.upstream_trace && (
-            <UpstreamTraceSection other={other} />
-          )}
+        {/* Upstream segmented timing (httptrace, admin only) */}
+        {props.isAdmin && other?.upstream_trace && (
+          <UpstreamTraceSection other={other} />
+        )}
 
-          {/* Stream status details (admin only) */}
-          {props.isAdmin &&
-            other?.stream_status &&
+        {/* Stream status details (admin only) */}
+        {props.isAdmin &&
+          other?.stream_status &&
           other.stream_status.status !== 'ok' && (
             <DetailSection label={t('Stream Status')}>
               <DetailRow

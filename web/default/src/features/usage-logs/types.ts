@@ -87,6 +87,12 @@ export type LogFilters = CommonLogFilters | DrawingLogFilters | TaskLogFilters
  */
 export interface UpstreamTrace {
   enabled?: boolean
+  transport_mode?: 'auto' | 'http1' | 'hybrid'
+  http_protocol?: string
+  h2_pool_size?: number
+  h2_shard?: number
+  h2_shard_active_at_pick?: number
+  h2_pending_upload_bytes_at_pick?: number
   // Connection facts
   reused_conn?: boolean
   was_idle?: boolean
@@ -204,6 +210,8 @@ export interface LogOtherData {
   model_price?: number
   group_ratio?: number
   user_group_ratio?: number
+  user_group_ratio_override?: number
+  group_ratio_source?: string
   cache_ratio?: number
   cache_creation_ratio?: number
   cache_creation_ratio_5m?: number
@@ -276,6 +284,9 @@ export interface LogStatistics {
   quota: number
   rpm: number
   tpm: number
+  updated_at?: number
+  stale?: boolean
+  source?: string
 }
 
 // ============================================================================
@@ -357,6 +368,10 @@ export interface GetLogsResponse {
     total: number
     page: number
     page_size: number
+    total_updated_at?: number
+    updated_at?: number
+    stale?: boolean
+    source?: string
   }
 }
 
@@ -418,7 +433,6 @@ export interface FetchLogsConfig {
   page: number
   pageSize: number
   searchParams: Record<string, unknown>
-  columnFilters: Array<{ id: string; value: unknown }>
 }
 
 // ============================================================================

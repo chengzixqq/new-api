@@ -16,13 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQueryClient, useIsFetching } from '@tanstack/react-query'
+import { useIsFetching } from '@tanstack/react-query'
 import { useNavigate, getRouteApi } from '@tanstack/react-router'
-import { type Table } from '@tanstack/react-table'
-import { useState, useEffect, useCallback } from 'react'
+import type { Table } from '@tanstack/react-table'
+import { useState, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { buildSearchParams } from '../lib/filter'
+import { createUsageLogsFilterSourceKey } from '../lib/query-state'
 import { getDefaultTimeRange } from '../lib/utils'
 import type { DrawingLogFilters, LogCategory, TaskLogFilters } from '../types'
 import { CompactDateTimeRangePicker } from './compact-date-time-range-picker'
@@ -37,6 +38,11 @@ const route = getRouteApi('/_authenticated/usage-logs/$section')
 
 type TaskLikeLogCategory = Extract<LogCategory, 'drawing' | 'task'>
 type TaskLogsFilters = DrawingLogFilters | TaskLogFilters
+
+type TaskLogDraft = {
+  sourceKey: string
+  filters: TaskLogsFilters
+}
 
 interface TaskLogsFilterBarProps<TData> {
   table: Table<TData>
@@ -67,17 +73,11 @@ function setFilterValue(
 export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const searchParams = route.useSearch()
   const { isAdminView: isAdmin } = useLogsViewScope()
   const fetchingLogs = useIsFetching({ queryKey: ['logs'] })
 
-  const [filters, setFilters] = useState<TaskLogsFilters>(() => {
-    const { start, end } = getDefaultTimeRange()
-    return { startTime: start, endTime: end }
-  })
-
-  useEffect(() => {
+  const searchState = useMemo<TaskLogDraft>(() => {
     const { start, end } = getDefaultTimeRange()
     const baseFilters = {
       startTime: searchParams.startTime
@@ -88,7 +88,13 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
         ? { channel: String(searchParams.channel) }
         : {}),
     }
-    const next: TaskLogsFilters =
+    const sourceValues = {
+      startTime: searchParams.startTime,
+      endTime: searchParams.endTime,
+      channel: searchParams.channel,
+      filter: searchParams.filter,
+    }
+    const filters: TaskLogsFilters =
       props.logCategory === 'drawing'
         ? {
             ...baseFilters,
@@ -99,7 +105,10 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
             ...(searchParams.filter ? { taskId: searchParams.filter } : {}),
           }
 
-    setFilters(next)
+    return {
+      sourceKey: createUsageLogsFilterSourceKey(sourceValues),
+      filters,
+    }
   }, [
     props.logCategory,
     searchParams.startTime,
@@ -107,12 +116,24 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
     searchParams.channel,
     searchParams.filter,
   ])
+  const [draft, setDraft] = useState<TaskLogDraft>(() => searchState)
+  const filters =
+    draft.sourceKey === searchState.sourceKey
+      ? draft.filters
+      : searchState.filters
 
   const handleChange = useCallback(
     (field: keyof TaskLogsFilters, value: Date | string | undefined) => {
-      setFilters((prev) => ({ ...prev, [field]: value }))
+      setDraft((current) => {
+        const base =
+          current.sourceKey === searchState.sourceKey ? current : searchState
+        return {
+          sourceKey: searchState.sourceKey,
+          filters: { ...base.filters, [field]: value },
+        }
+      })
     },
-    []
+    [searchState]
   )
 
   const handleApply = useCallback(() => {
@@ -125,25 +146,29 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
         page: 1,
       },
     })
-    queryClient.invalidateQueries({ queryKey: ['logs'] })
-  }, [filters, navigate, props.logCategory, queryClient])
+  }, [filters, navigate, props.logCategory])
 
   const handleReset = useCallback(() => {
     const { start, end } = getDefaultTimeRange()
     const resetFilters: TaskLogsFilters = { startTime: start, endTime: end }
-    setFilters(resetFilters)
+    const resetSearch = {
+      startTime: start.getTime(),
+      endTime: end.getTime(),
+    }
+    setDraft({
+      sourceKey: createUsageLogsFilterSourceKey(resetSearch),
+      filters: resetFilters,
+    })
 
     navigate({
       to: '/usage-logs/$section',
       params: { section: props.logCategory },
       search: {
         page: 1,
-        startTime: start.getTime(),
-        endTime: end.getTime(),
+        ...resetSearch,
       },
     })
-    queryClient.invalidateQueries({ queryKey: ['logs'] })
-  }, [navigate, props.logCategory, queryClient])
+  }, [navigate, props.logCategory])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -154,9 +179,16 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
 
   const handleFilterChange = useCallback(
     (value: string) => {
-      setFilters((prev) => setFilterValue(prev, props.logCategory, value))
+      setDraft((current) => {
+        const base =
+          current.sourceKey === searchState.sourceKey ? current : searchState
+        return {
+          sourceKey: searchState.sourceKey,
+          filters: setFilterValue(base.filters, props.logCategory, value),
+        }
+      })
     },
-    [props.logCategory]
+    [props.logCategory, searchState]
   )
 
   const filterValue = getFilterValue(filters, props.logCategory)

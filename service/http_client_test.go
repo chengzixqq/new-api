@@ -10,9 +10,25 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+type blockingProxyDialer struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (d *blockingProxyDialer) Dial(_, _ string) (net.Conn, error) {
+	close(d.started)
+	<-d.release
+	left, right := net.Pipe()
+	_ = right.Close()
+	return left, nil
+}
 
 func TestBuildUpstreamTransportConfig_AllPaths(t *testing.T) {
 	httpProxy, err := url.Parse("http://proxy.example:8080")
@@ -65,6 +81,111 @@ func TestBuildUpstreamTransportConfig_AllPaths(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildMediaWorkerHTTPClientUsesMediaHeaderTimeout(t *testing.T) {
+	baseTransport := &http.Transport{ResponseHeaderTimeout: upstreamResponseHeaderTimeout}
+
+	client := buildMediaWorkerHTTPClient(baseTransport)
+
+	mediaTransport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotSame(t, baseTransport, mediaTransport)
+	require.Equal(t, mediaResponseHeaderTimeout, mediaTransport.ResponseHeaderTimeout)
+	require.Equal(t, upstreamResponseHeaderTimeout, baseTransport.ResponseHeaderTimeout)
+}
+
+func TestBuildUpstreamTransport_UsesStageTimeoutsWithoutWholeRequestTimeout(t *testing.T) {
+	originalDial := common.RelayDialTimeout
+	originalTLS := common.RelayTLSHandshakeTimeout
+	originalHeader := common.RelayResponseHeaderTimeout
+	originalLegacy := common.RelayTimeout
+	common.RelayDialTimeout = 7
+	common.RelayTLSHandshakeTimeout = 8
+	common.RelayResponseHeaderTimeout = 9
+	common.RelayTimeout = 1
+	t.Cleanup(func() {
+		common.RelayDialTimeout = originalDial
+		common.RelayTLSHandshakeTimeout = originalTLS
+		common.RelayResponseHeaderTimeout = originalHeader
+		common.RelayTimeout = originalLegacy
+	})
+
+	transport, _, err := buildUpstreamTransport(nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 8*time.Second, transport.TLSHandshakeTimeout)
+	assert.Equal(t, 9*time.Second, transport.ResponseHeaderTimeout)
+	assert.Equal(t, time.Second, transport.ExpectContinueTimeout)
+	assert.NotNil(t, transport.DialContext)
+
+	client := buildUpstreamHTTPClient(transport)
+	assert.Zero(t, client.Timeout, "legacy RELAY_TIMEOUT must not truncate long-lived streams")
+}
+
+func TestValidateUpstreamTimeoutConfigRejectsNonPositiveValues(t *testing.T) {
+	originalDial := common.RelayDialTimeout
+	originalTLS := common.RelayTLSHandshakeTimeout
+	originalHeader := common.RelayResponseHeaderTimeout
+	originalLegacy := common.RelayTimeout
+	t.Cleanup(func() {
+		common.RelayDialTimeout = originalDial
+		common.RelayTLSHandshakeTimeout = originalTLS
+		common.RelayResponseHeaderTimeout = originalHeader
+		common.RelayTimeout = originalLegacy
+	})
+
+	common.RelayDialTimeout = 30
+	common.RelayTLSHandshakeTimeout = 10
+	common.RelayResponseHeaderTimeout = 300
+	common.RelayTimeout = 0
+	require.NoError(t, validateUpstreamTimeoutConfig())
+
+	tests := []struct {
+		name   string
+		mutate func()
+	}{
+		{name: "negative legacy timeout", mutate: func() { common.RelayTimeout = -1 }},
+		{name: "zero dial timeout", mutate: func() { common.RelayDialTimeout = 0 }},
+		{name: "zero TLS timeout", mutate: func() { common.RelayTLSHandshakeTimeout = 0 }},
+		{name: "zero response header timeout", mutate: func() { common.RelayResponseHeaderTimeout = 0 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			common.RelayDialTimeout = 30
+			common.RelayTLSHandshakeTimeout = 10
+			common.RelayResponseHeaderTimeout = 300
+			common.RelayTimeout = 0
+			test.mutate()
+			require.Error(t, validateUpstreamTimeoutConfig())
+		})
+	}
+}
+
+func TestDialProxyContext_CancelStopsNonContextDialer(t *testing.T) {
+	dialer := &blockingProxyDialer{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := dialProxyContext(ctx, dialer, "tcp", "example.com:443")
+		resultCh <- err
+	}()
+
+	select {
+	case <-dialer.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy dial did not start")
+	}
+	cancel()
+	select {
+	case err := <-resultCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy dial did not stop after context cancellation")
+	}
+	close(dialer.release)
 }
 
 func TestNewProxyHttpClient_ConcurrentFirstCallReturnsSameClient(t *testing.T) {

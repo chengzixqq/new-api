@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -1490,20 +1491,51 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 		return nil
 	}
 	return DB.Transaction(func(tx *gorm.DB) error {
-		var sub UserSubscription
-		if err := lockForUpdate(tx).
-			Where("id = ?", userSubscriptionId).
-			First(&sub).Error; err != nil {
-			return err
-		}
-		newUsed := sub.AmountUsed + delta
-		if newUsed < 0 {
-			newUsed = 0
-		}
-		if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
-			return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
-		}
-		sub.AmountUsed = newUsed
-		return tx.Save(&sub).Error
+		return AdjustUserSubscriptionDeltaTx(tx, userSubscriptionId, delta)
 	})
+}
+
+// AdjustUserSubscriptionDeltaTx updates subscription usage inside the caller's
+// transaction. It is shared by synchronous settlement and async task terminal
+// transitions so task state and financial state commit together.
+func AdjustUserSubscriptionDeltaTx(tx *gorm.DB, userSubscriptionId int, delta int64) error {
+	if tx == nil {
+		return errors.New("database transaction is nil")
+	}
+	if userSubscriptionId <= 0 {
+		return errors.New("invalid userSubscriptionId")
+	}
+	if delta == 0 {
+		return nil
+	}
+
+	var sub UserSubscription
+	if err := lockForUpdate(tx).
+		Where("id = ?", userSubscriptionId).
+		First(&sub).Error; err != nil {
+		return err
+	}
+	var newUsed int64
+	if delta > 0 {
+		if sub.AmountUsed > math.MaxInt64-delta {
+			return errors.New("subscription used amount overflow")
+		}
+		newUsed = sub.AmountUsed + delta
+	} else {
+		refund := -delta
+		if refund >= sub.AmountUsed {
+			newUsed = 0
+		} else {
+			newUsed = sub.AmountUsed - refund
+		}
+	}
+	if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
+		return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
+	}
+	return tx.Model(&UserSubscription{}).
+		Where("id = ?", sub.Id).
+		Updates(map[string]interface{}{
+			"amount_used": newUsed,
+			"updated_at":  common.GetTimestamp(),
+		}).Error
 }

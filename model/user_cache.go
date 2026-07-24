@@ -15,13 +15,14 @@ import (
 
 // UserBase struct remains the same as it represents the cached data structure
 type UserBase struct {
-	Id       int    `json:"id"`
-	Group    string `json:"group"`
-	Email    string `json:"email"`
-	Quota    int    `json:"quota"`
-	Status   int    `json:"status"`
-	Username string `json:"username"`
-	Setting  string `json:"setting"`
+	Id                  int    `json:"id"`
+	Group               string `json:"group"`
+	Email               string `json:"email"`
+	Quota               int    `json:"quota"`
+	Status              int    `json:"status"`
+	Username            string `json:"username"`
+	Setting             string `json:"setting"`
+	GroupRatioOverrides string `json:"group_ratio_overrides"`
 }
 
 func (user *UserBase) WriteContext(c *gin.Context) {
@@ -31,6 +32,17 @@ func (user *UserBase) WriteContext(c *gin.Context) {
 	common.SetContextKey(c, constant.ContextKeyUserEmail, user.Email)
 	common.SetContextKey(c, constant.ContextKeyUserName, user.Username)
 	common.SetContextKey(c, constant.ContextKeyUserSetting, user.GetSetting())
+	overrides := user.GetGroupRatioOverrides()
+	common.SetContextKey(c, constant.ContextKeyUserGroupRatioOverrides, overrides)
+}
+
+func (user *UserBase) GetGroupRatioOverrides() map[string]float64 {
+	overrides, err := ParseGroupRatioOverrides(user.GroupRatioOverrides)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to parse group ratio overrides for user %d: %s", user.Id, err.Error()))
+		return nil
+	}
+	return overrides
 }
 
 func (user *UserBase) GetSetting() dto.UserSetting {
@@ -94,6 +106,9 @@ func updateUserCache(user User) error {
 	if err := updateUserNameCache(user.Id, user.Username); err != nil {
 		return err
 	}
+	if err := updateUserGroupRatioOverridesCache(user.Id, user.GroupRatioOverridesRaw); err != nil {
+		return err
+	}
 	return updateUserSettingCache(user.Id, user.Setting)
 }
 
@@ -127,13 +142,14 @@ func GetUserCache(userId int) (userCache *UserBase, err error) {
 
 	// Create cache object from user data
 	userCache = &UserBase{
-		Id:       user.Id,
-		Group:    user.Group,
-		Quota:    user.Quota,
-		Status:   user.Status,
-		Username: user.Username,
-		Setting:  user.Setting,
-		Email:    user.Email,
+		Id:                  user.Id,
+		Group:               user.Group,
+		Quota:               user.Quota,
+		Status:              user.Status,
+		Username:            user.Username,
+		Setting:             user.Setting,
+		Email:               user.Email,
+		GroupRatioOverrides: user.GroupRatioOverridesRaw,
 	}
 
 	return userCache, nil
@@ -247,6 +263,13 @@ func updateUserNameCache(userId int, username string) error {
 		return nil
 	}
 	return common.RedisHSetField(getUserCacheKey(userId), "Username", username)
+}
+
+func updateUserGroupRatioOverridesCache(userId int, overrides string) error {
+	if !common.RedisEnabled {
+		return nil
+	}
+	return common.RedisHSetField(getUserCacheKey(userId), "GroupRatioOverrides", overrides)
 }
 
 func updateUserSettingCache(userId int, setting string) error {

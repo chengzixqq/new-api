@@ -18,7 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
-import { type ColumnDef } from '@tanstack/react-table'
+import type { ColumnDef } from '@tanstack/react-table'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -36,9 +37,11 @@ import {
   LOG_TYPE_ALL_VALUE,
   LOG_TYPE_ENUM,
 } from '../constants'
+import type { UsageLog } from '../data/schema'
 import { useColumnsByCategory } from '../lib/columns'
-import { parseLogOther } from '../lib/format'
-import { fetchLogsByCategory } from '../lib/utils'
+import { prepareUsageLogs, type PreparedUsageLog } from '../lib/log-data'
+import { createUsageLogsQueryKey } from '../lib/query-state'
+import { buildLogsRequestParams, fetchLogsByCategory } from '../lib/utils'
 import type { LogCategory } from '../types'
 import { CommonLogsFilterBar } from './common-logs-filter-bar'
 import { TaskLogsFilterBar } from './task-logs-filter-bar'
@@ -64,7 +67,12 @@ function getColumnVisibilityStorageKey(
 }
 
 function deserializeLogTypeFilter(value: unknown): unknown[] {
-  const values = Array.isArray(value) ? value : value ? [value] : []
+  let values: unknown[] = []
+  if (Array.isArray(value)) {
+    values = value
+  } else if (value) {
+    values = [value]
+  }
   return values.filter((item) => String(item) !== LOG_TYPE_ALL_VALUE)
 }
 
@@ -87,7 +95,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
   } = useTableUrlState({
     search: route.useSearch(),
     navigate: route.useNavigate(),
-    pagination: { defaultPage: 1, defaultPageSize: isMobile ? 20 : 100 },
+    pagination: { defaultPage: 1, defaultPageSize: isMobile ? 20 : 50 },
     globalFilter: { enabled: false },
     columnFilters: [
       {
@@ -116,36 +124,78 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     ],
   })
 
-  const { data, isLoading, isFetching } = useQuery({
-    queryKey: [
-      'logs',
+  const requestSearchParams = useMemo(
+    () => ({
+      type: searchParams.type,
+      filter: searchParams.filter,
+      model: searchParams.model,
+      token: searchParams.token,
+      channel: searchParams.channel,
+      group: searchParams.group,
+      username: searchParams.username,
+      requestId: searchParams.requestId,
+      upstreamRequestId: searchParams.upstreamRequestId,
+      startTime: searchParams.startTime,
+      endTime: searchParams.endTime,
+    }),
+    [
+      searchParams.type,
+      searchParams.filter,
+      searchParams.model,
+      searchParams.token,
+      searchParams.channel,
+      searchParams.group,
+      searchParams.username,
+      searchParams.requestId,
+      searchParams.upstreamRequestId,
+      searchParams.startTime,
+      searchParams.endTime,
+    ]
+  )
+  const requestConfig = useMemo(
+    () => ({
       logCategory,
       isAdmin,
-      pagination.pageIndex + 1,
+      page: pagination.pageIndex + 1,
+      pageSize: pagination.pageSize,
+      searchParams: requestSearchParams,
+    }),
+    [
+      isAdmin,
+      logCategory,
+      pagination.pageIndex,
       pagination.pageSize,
-      columnFilters,
-      searchParams,
-      t,
-    ],
+      requestSearchParams,
+    ]
+  )
+  const requestParams = useMemo(
+    () => buildLogsRequestParams(requestConfig),
+    [requestConfig]
+  )
+
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: createUsageLogsQueryKey(logCategory, isAdmin, requestParams),
     queryFn: async () => {
-      const result = await fetchLogsByCategory({
-        logCategory,
-        isAdmin,
-        page: pagination.pageIndex + 1,
-        pageSize: pagination.pageSize,
-        searchParams,
-        columnFilters,
-      })
+      const result = await fetchLogsByCategory(requestConfig)
 
       if (!result?.success) {
         toast.error(result?.message || t('Failed to load logs'))
         return DEFAULT_LOGS_DATA
       }
 
-      return result.data || DEFAULT_LOGS_DATA
+      const resultData = result.data || DEFAULT_LOGS_DATA
+      if (logCategory !== 'common') return resultData
+
+      return {
+        ...resultData,
+        items: prepareUsageLogs(resultData.items as UsageLog[]),
+      }
     },
     placeholderData: (previousData, previousQuery) => {
-      if (previousQuery?.queryKey[1] === logCategory) {
+      if (
+        previousQuery?.queryKey[1] === logCategory &&
+        previousQuery.queryKey[2] === isAdmin
+      ) {
         return previousData
       }
       return undefined
@@ -212,9 +262,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         let tintClass =
           isCommon && logType != null ? (logTypeRowTint[logType] ?? '') : ''
         if (isCommon && isAdmin) {
-          const other = parseLogOther(
-            ((row.original as Record<string, unknown>).other as string) ?? ''
-          )
+          const other = (row.original as PreparedUsageLog).parsedOther
           if (other?.admin_info?.quota_saturation) {
             tintClass = quotaSaturationRowTint
           }

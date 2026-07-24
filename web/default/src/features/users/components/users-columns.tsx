@@ -25,6 +25,11 @@ import { LongText } from '@/components/long-text'
 import { StatusBadge } from '@/components/status-badge'
 import { TableId } from '@/components/table-id'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from '@/components/ui/hover-card'
 import { Progress } from '@/components/ui/progress'
 import {
   Tooltip,
@@ -40,6 +45,7 @@ import {
   USER_ROLES,
   isUserDeleted,
 } from '../constants'
+import { getUserGroupRatioOverrideEntries } from '../lib/group-ratio-overrides'
 import type { User } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
 
@@ -247,6 +253,55 @@ export function useUsersColumns(): ColumnDef<User>[] {
       },
       size: 140,
       meta: { mobileOrder: 30 },
+    },
+    {
+      id: 'group_ratio_overrides',
+      header: t('Personal group pricing'),
+      cell: ({ row }) => {
+        const entries = getUserGroupRatioOverrideEntries(
+          row.original.group_ratio_overrides
+        )
+
+        if (entries.length === 0) {
+          return <span className='text-muted-foreground'>—</span>
+        }
+
+        return (
+          <HoverCard>
+            <HoverCardTrigger
+              delay={100}
+              closeDelay={100}
+              render={
+                <button
+                  type='button'
+                  className='focus-visible:ring-ring/50 rounded-full outline-none focus-visible:ring-3'
+                  aria-label={`${t('Personal group pricing')}: ${entries.length}`}
+                  onClick={(event) => event.currentTarget.focus()}
+                >
+                  <StatusBadge
+                    label={String(entries.length)}
+                    variant='info'
+                    copyable={false}
+                    className='cursor-help'
+                  />
+                </button>
+              }
+            />
+            <HoverCardContent align='start' className='w-auto min-w-48 p-0'>
+              <div className='flex max-h-64 flex-col gap-2 overflow-y-auto p-2.5'>
+                {entries.map(([group, ratio]) => (
+                  <div key={group} className='min-w-0'>
+                    <GroupBadge group={group} ratio={ratio} />
+                  </div>
+                ))}
+              </div>
+            </HoverCardContent>
+          </HoverCard>
+        )
+      },
+      enableSorting: false,
+      size: 160,
+      meta: { mobileOrder: 35 },
     },
     {
       accessorKey: 'role',

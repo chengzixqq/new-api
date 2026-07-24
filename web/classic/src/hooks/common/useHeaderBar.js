@@ -37,7 +37,9 @@ export const useHeaderBar = ({ onMobileMenuToggle, drawerOpen }) => {
   const [collapsed, toggleCollapsed] = useSidebarCollapsed();
   const [logoLoaded, setLogoLoaded] = useState(false);
   const navigate = useNavigate();
-  const [currentLang, setCurrentLang] = useState(normalizeLanguage(i18n.language));
+  const [currentLang, setCurrentLang] = useState(
+    normalizeLanguage(i18n.language),
+  );
   const location = useLocation();
 
   const loading = statusState?.status === undefined;
@@ -69,6 +71,13 @@ export const useHeaderBar = ({ onMobileMenuToggle, drawerOpen }) => {
           };
         }
 
+        if (typeof modules.health === 'boolean') {
+          modules.health = {
+            enabled: modules.health,
+            requireAuth: false,
+          };
+        }
+
         return modules;
       } catch (error) {
         console.error('解析顶栏模块配置失败:', error);
@@ -86,6 +95,15 @@ export const useHeaderBar = ({ onMobileMenuToggle, drawerOpen }) => {
         : false; // 默认不需要登录
     }
     return false; // 默认不需要登录
+  }, [headerNavModules]);
+
+  const healthRequireAuth = useMemo(() => {
+    if (headerNavModules?.health) {
+      return typeof headerNavModules.health === 'object'
+        ? headerNavModules.health.requireAuth === true
+        : false;
+    }
+    return false;
   }, [headerNavModules]);
 
   const isConsoleRoute = location.pathname.startsWith('/console');
@@ -238,6 +256,7 @@ export const useHeaderBar = ({ onMobileMenuToggle, drawerOpen }) => {
     drawerOpen,
     headerNavModules,
     pricingRequireAuth,
+    healthRequireAuth,
 
     // Actions
     logout,

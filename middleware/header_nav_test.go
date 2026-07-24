@@ -86,6 +86,30 @@ func TestHeaderNavModuleAuthAllowsDefaultPublicAccess(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 }
 
+func TestHeaderNavModuleAuthDisablesHealthByDefault(t *testing.T) {
+	withHeaderNavModules(t, "")
+
+	recorder := performHeaderNavRequest(t, HeaderNavModuleAuth("health"), false)
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+}
+
+func TestHeaderNavModuleAuthAllowsPublicHealthWhenEnabled(t *testing.T) {
+	withHeaderNavModules(t, `{"health":{"enabled":true,"requireAuth":false}}`)
+
+	recorder := performHeaderNavRequest(t, HeaderNavModuleAuth("health"), false)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+}
+
+func TestHeaderNavModuleAuthRequiresLoginForHealth(t *testing.T) {
+	withHeaderNavModules(t, `{"health":{"enabled":true,"requireAuth":true}}`)
+
+	recorder := performHeaderNavRequest(t, HeaderNavModuleAuth("health"), false)
+
+	require.Equal(t, http.StatusUnauthorized, recorder.Code)
+}
+
 func TestHeaderNavModuleAuthRejectsDisabledPricing(t *testing.T) {
 	raw := `{"pricing":{"enabled":false,"requireAuth":false}}`
 	withHeaderNavModules(t, raw)

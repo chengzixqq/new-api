@@ -18,6 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { AuthSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import {
+  AUTH_DEFAULT_SECTION,
+  type AUTH_SECTION_IDS,
+} from '../section-route-config'
 import { BasicAuthSection } from './basic-auth-section'
 import { BotProtectionSection } from './bot-protection-section'
 import { CustomOAuthSection } from './custom-oauth/custom-oauth-section'
@@ -122,17 +126,16 @@ const AUTH_SECTIONS = [
   },
 ] as const
 
-export type AuthSectionId = (typeof AUTH_SECTIONS)[number]['id']
+export type AuthSectionId = (typeof AUTH_SECTION_IDS)[number]
 
 const authRegistry = createSectionRegistry<AuthSectionId, AuthSettings>({
   sections: AUTH_SECTIONS,
-  defaultSection: 'basic-auth',
+  defaultSection: AUTH_DEFAULT_SECTION,
   basePath: '/system-settings/auth',
   urlStyle: 'path',
 })
 
-export const AUTH_SECTION_IDS = authRegistry.sectionIds
-export const AUTH_DEFAULT_SECTION = authRegistry.defaultSection
 export const getAuthSectionNavItems = authRegistry.getSectionNavItems
 export const getAuthSectionContent = authRegistry.getSectionContent
 export const getAuthSectionMeta = authRegistry.getSectionMeta
+export { AUTH_DEFAULT_SECTION, AUTH_SECTION_IDS } from '../section-route-config'

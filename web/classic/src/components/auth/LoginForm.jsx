@@ -88,6 +88,7 @@ const LoginForm = () => {
   const [turnstileEnabled, setTurnstileEnabled] = useState(false);
   const [turnstileSiteKey, setTurnstileSiteKey] = useState('');
   const [turnstileToken, setTurnstileToken] = useState('');
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const [showWeChatLoginModal, setShowWeChatLoginModal] = useState(false);
   const [showEmailLogin, setShowEmailLogin] = useState(false);
   const [wechatLoading, setWechatLoading] = useState(false);
@@ -266,6 +267,8 @@ const LoginForm = () => {
       showError('登录失败，请重试');
     } finally {
       setLoginLoading(false);
+      setTurnstileToken('');
+      setTurnstileResetKey((key) => key + 1);
     }
   }
 
@@ -968,6 +971,7 @@ const LoginForm = () => {
         {turnstileEnabled && (
           <div className='flex justify-center mt-6'>
             <Turnstile
+              key={turnstileResetKey}
               sitekey={turnstileSiteKey}
               onVerify={(token) => {
                 setTurnstileToken(token);

@@ -26,6 +26,10 @@ export const useNavigation = (t, docsLink, headerNavModules) => {
       home: true,
       console: true,
       pricing: true,
+      health: {
+        enabled: false,
+        requireAuth: false,
+      },
       docs: true,
       about: true,
     };
@@ -49,6 +53,11 @@ export const useNavigation = (t, docsLink, headerNavModules) => {
         itemKey: 'pricing',
         to: '/pricing',
       },
+      {
+        text: t('健康状态'),
+        itemKey: 'health',
+        to: '/health',
+      },
       ...(docsLink
         ? [
             {
@@ -71,11 +80,9 @@ export const useNavigation = (t, docsLink, headerNavModules) => {
       if (link.itemKey === 'docs') {
         return docsLink && modules.docs;
       }
-      if (link.itemKey === 'pricing') {
-        // 支持新的pricing配置格式
-        return typeof modules.pricing === 'object'
-          ? modules.pricing.enabled
-          : modules.pricing;
+      if (link.itemKey === 'pricing' || link.itemKey === 'health') {
+        const module = modules[link.itemKey];
+        return typeof module === 'object' ? module.enabled : module;
       }
       return modules[link.itemKey] === true;
     });

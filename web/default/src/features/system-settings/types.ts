@@ -170,11 +170,30 @@ export type ContentSettings = {
   'console_setting.api_info': string
   'console_setting.announcements': string
   'console_setting.faq': string
-  'console_setting.uptime_kuma_groups': string
   'console_setting.api_info_enabled': boolean
   'console_setting.announcements_enabled': boolean
   'console_setting.faq_enabled': boolean
-  'console_setting.uptime_kuma_enabled': boolean
+  'model_health_setting.enabled': boolean
+  'model_health_setting.pool_details_enabled': boolean
+  'model_health_setting.multi_sample_enabled': boolean
+  'model_health_setting.default_interval_seconds': number
+  'model_health_setting.default_timeout_seconds': number
+  'model_health_setting.default_sampling_mode': 'fixed' | 'confirm_on_failure'
+  'model_health_setting.default_samples_per_run': number
+  'model_health_setting.default_minimum_successes': number
+  'model_health_setting.default_sample_spacing_seconds': number
+  'model_health_setting.concurrency': number
+  'model_health_setting.retention_days': number
+  'model_health_setting.healthy_threshold': number
+  'model_health_setting.fluctuating_threshold': number
+  'model_health_setting.passive_min_samples': number
+  'model_health_setting.active_min_samples': number
+  'model_health_setting.public_groups': string
+  'model_health_setting.public_models': string
+  'perf_metrics_setting.enabled': boolean
+  'perf_metrics_setting.flush_interval': number
+  'perf_metrics_setting.bucket_time': 'hour' | 'minute' | '5min'
+  'perf_metrics_setting.retention_days': number
   DataExportEnabled: boolean
   DataExportDefaultTime: string
   DataExportInterval: number
@@ -351,6 +370,10 @@ export type OperationsSettings = {
   UpstreamWarmupEnabled: boolean
   UpstreamTraceEnabled: boolean
   UpstreamTraceSampleRate: number
+  'global.sse_max_event_size_mb': string
+  'global.upstream_http_mode': string
+  'global.http2_connection_pool_size': string
+  'global.http1_body_threshold_kib': string
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number
@@ -359,10 +382,6 @@ export type OperationsSettings = {
   'performance_setting.monitor_cpu_threshold': number
   'performance_setting.monitor_memory_threshold': number
   'performance_setting.monitor_disk_threshold': number
-  'perf_metrics_setting.enabled': boolean
-  'perf_metrics_setting.flush_interval': number
-  'perf_metrics_setting.bucket_time': 'hour' | 'minute' | '5min'
-  'perf_metrics_setting.retention_days': number
 }
 
 export type SecuritySettings = {

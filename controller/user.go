@@ -302,7 +302,8 @@ func Register(c *gin.Context) {
 
 func GetAllUsers(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
-	users, total, err := model.GetAllUsers(pageInfo)
+	includeGroupRatioOverrides := c.Query("include_group_ratio_overrides") == "true"
+	users, total, err := model.GetAllUsers(pageInfo, includeGroupRatioOverrides)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -331,7 +332,8 @@ func SearchUsers(c *gin.Context) {
 		}
 	}
 	pageInfo := common.GetPageQuery(c)
-	users, total, err := model.SearchUsers(keyword, group, role, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	includeGroupRatioOverrides := c.Query("include_group_ratio_overrides") == "true"
+	users, total, err := model.SearchUsers(keyword, group, role, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), includeGroupRatioOverrides)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -362,6 +364,9 @@ func GetUser(c *gin.Context) {
 	if !canManageTargetRole(myRole, user.Role) {
 		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionSameLevel)
 		return
+	}
+	if err := user.LoadGroupRatioOverrides(); err != nil {
+		common.SysLog(fmt.Sprintf("failed to load group ratio overrides for user %d: %s", user.Id, err.Error()))
 	}
 	user.AdminPermissions = authz.Capabilities(user.Id, user.Role)
 	c.JSON(http.StatusOK, gin.H{
@@ -653,7 +658,7 @@ func GetUserModels(c *gin.Context) {
 
 func UpdateUser(c *gin.Context) {
 	var updatedUser model.User
-	err := json.NewDecoder(c.Request.Body).Decode(&updatedUser)
+	err := common.DecodeJson(c.Request.Body, &updatedUser)
 	if err != nil || updatedUser.Id == 0 {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
@@ -667,6 +672,10 @@ func UpdateUser(c *gin.Context) {
 		updatedUser.Password = "$I_LOVE_U" // make Validator happy :)
 	}
 	if err := common.Validate.Struct(&updatedUser); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
+		return
+	}
+	if err := model.ValidateGroupRatioOverrides(updatedUser.GroupRatioOverrides); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
 		return
 	}

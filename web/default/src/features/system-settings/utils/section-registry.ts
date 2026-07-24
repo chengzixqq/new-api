@@ -22,8 +22,12 @@ import type { ReactNode } from 'react'
 /**
  * Section definition for settings pages
  */
-export type SectionDefinition<TSettings, TExtraArgs extends unknown[] = []> = {
-  id: string
+export type SectionDefinition<
+  TSectionId extends string,
+  TSettings,
+  TExtraArgs extends unknown[] = [],
+> = {
+  id: TSectionId
   titleKey: string
   build: (settings: TSettings, ...extraArgs: TExtraArgs) => ReactNode
 }
@@ -36,7 +40,7 @@ export type SectionRegistryConfig<
   TSettings,
   TExtraArgs extends unknown[] = [],
 > = {
-  sections: readonly SectionDefinition<TSettings, TExtraArgs>[]
+  sections: readonly SectionDefinition<TSectionId, TSettings, TExtraArgs>[]
   defaultSection: TSectionId
   basePath: string
   /** 'query' = `${basePath}?section=${id}`, 'path' = `${basePath}/${id}` */

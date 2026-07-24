@@ -20,6 +20,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import i18next from 'i18next'
 import { toast } from 'sonner'
 
+import { statusQueryKey } from '@/lib/status-query'
+
 import {
   createCustomOAuthProvider,
   updateCustomOAuthProvider,
@@ -33,7 +35,7 @@ function useInvalidateOnSuccess() {
   return {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['custom-oauth-providers'] })
-      queryClient.invalidateQueries({ queryKey: ['status'] })
+      queryClient.invalidateQueries({ queryKey: statusQueryKey })
     },
   }
 }

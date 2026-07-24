@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQueryClient, useIsFetching } from '@tanstack/react-query'
+import { useIsFetching } from '@tanstack/react-query'
 import { useNavigate, getRouteApi } from '@tanstack/react-router'
 import type { Table } from '@tanstack/react-table'
 import { Eye, EyeOff } from 'lucide-react'
@@ -40,6 +40,7 @@ import {
 
 import { LOG_TYPE_ALL_VALUE, LOG_TYPE_FILTERS } from '../constants'
 import { buildSearchParams } from '../lib/filter'
+import { createUsageLogsFilterSourceKey } from '../lib/query-state'
 import { getDefaultTimeRange } from '../lib/utils'
 import type { CommonLogFilters } from '../types'
 import { CommonLogsStats } from './common-logs-stats'
@@ -77,34 +78,6 @@ function getLogTypeValue(value: unknown): LogTypeValue {
     : LOG_TYPE_ALL_VALUE
 }
 
-function buildSearchSourceKey(values: {
-  startTime?: unknown
-  endTime?: unknown
-  channel?: unknown
-  model?: unknown
-  token?: unknown
-  group?: unknown
-  username?: unknown
-  requestId?: unknown
-  upstreamRequestId?: unknown
-  type?: unknown
-}) {
-  return [
-    values.startTime,
-    values.endTime,
-    values.channel,
-    values.model,
-    values.token,
-    values.group,
-    values.username,
-    values.requestId,
-    values.upstreamRequestId,
-    Array.isArray(values.type) ? values.type.join(',') : values.type,
-  ]
-    .map((value) => String(value ?? ''))
-    .join('\u001f')
-}
-
 interface CommonLogsFilterBarProps<TData> {
   table: Table<TData>
 }
@@ -114,7 +87,6 @@ export function CommonLogsFilterBar<TData>(
 ) {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const searchParams = route.useSearch()
   const { isAdminView: isAdmin } = useLogsViewScope()
   const { sensitiveVisible, setSensitiveVisible } = useUsageLogsContext()
@@ -148,7 +120,7 @@ export function CommonLogsFilterBar<TData>(
       upstreamRequestId: searchParams.upstreamRequestId || undefined,
     }
     return {
-      sourceKey: buildSearchSourceKey(sourceValues),
+      sourceKey: createUsageLogsFilterSourceKey(sourceValues),
       filters,
       logType: getLogTypeValue(searchParams.type),
     }
@@ -196,9 +168,7 @@ export function CommonLogsFilterBar<TData>(
         page: 1,
       },
     })
-    queryClient.invalidateQueries({ queryKey: ['logs'] })
-    queryClient.invalidateQueries({ queryKey: ['usage-logs-stats'] })
-  }, [filters, logType, navigate, queryClient])
+  }, [filters, logType, navigate])
 
   const handleReset = useCallback(() => {
     const { start, end } = getDefaultTimeRange()
@@ -209,7 +179,7 @@ export function CommonLogsFilterBar<TData>(
       endTime: end.getTime(),
     }
     setDraft({
-      sourceKey: buildSearchSourceKey(resetSearch),
+      sourceKey: createUsageLogsFilterSourceKey(resetSearch),
       filters: resetFilters,
       logType: LOG_TYPE_ALL_VALUE,
     })
@@ -222,9 +192,7 @@ export function CommonLogsFilterBar<TData>(
         ...resetSearch,
       },
     })
-    queryClient.invalidateQueries({ queryKey: ['logs'] })
-    queryClient.invalidateQueries({ queryKey: ['usage-logs-stats'] })
-  }, [navigate, queryClient])
+  }, [navigate])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

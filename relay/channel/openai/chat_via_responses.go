@@ -87,7 +87,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 	var finalResponse *dto.OpenAIResponsesResponse
 	var streamErr *types.NewAPIError
 
-	scanner := helper.NewStreamScanner(resp.Body)
+	scanner := helper.NewStreamScanner(resp.Body, info)
 	scanner.Split(bufio.ScanLines)
 	for scanner.Scan() {
 		line := scanner.Text()

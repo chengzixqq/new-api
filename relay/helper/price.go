@@ -2,6 +2,7 @@ package helper
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -45,6 +46,7 @@ const defaultTieredPreConsumeMaxTokens = 8192
 func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.GroupRatioInfo {
 	groupRatioInfo := types.GroupRatioInfo{
 		GroupRatio:        1.0, // default ratio
+		GroupRatioSource:  types.GroupRatioSourceGroup,
 		GroupSpecialRatio: -1,
 	}
 
@@ -55,26 +57,38 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.
 		relayInfo.UsingGroup = autoGroup.(string)
 	}
 
-	// check user group special ratio
+	// Group-wide special pricing overrides the target group's base ratio.
 	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
 	if ok {
-		// user group special ratio
 		groupRatioInfo.GroupSpecialRatio = userGroupRatio
 		groupRatioInfo.GroupRatio = userGroupRatio
 		groupRatioInfo.HasSpecialRatio = true
+		groupRatioInfo.GroupRatioSource = types.GroupRatioSourceGroupSpecial
 	} else {
-		// normal group ratio
 		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 	}
 
+	// Model-specific group ratios override membership-group and base ratios.
 	if modelGroupRatio, ok := model.GetModelGroupRatio(relayInfo.OriginModelName, relayInfo.UsingGroup); ok {
 		groupRatioInfo.ModelGroupRatio = modelGroupRatio
 		groupRatioInfo.GroupRatio = modelGroupRatio
 		groupRatioInfo.HasModelGroupRatio = true
+		groupRatioInfo.GroupRatioSource = types.GroupRatioSourceModelGroupOverride
 	}
 	if modelGroupPricing, ok := model.GetModelGroupPriceOverrides(relayInfo.OriginModelName, relayInfo.UsingGroup); ok {
 		groupRatioInfo.ModelGroupPricing = &modelGroupPricing
 		groupRatioInfo.HasModelGroupPricing = true
+	}
+
+	// A per-user override is the most specific group-ratio rule. It wins over
+	// model-specific group ratios, membership-group rules, and the base ratio.
+	// Invalid cached values are ignored defensively; writes are validated before storage.
+	if ratio, exists := relayInfo.UserGroupRatioOverrides[relayInfo.UsingGroup]; exists &&
+		model.IsValidGroupRatioOverride(ratio) {
+		groupRatioInfo.UserGroupRatioOverride = ratio
+		groupRatioInfo.HasUserGroupRatioOverride = true
+		groupRatioInfo.GroupRatio = ratio
+		groupRatioInfo.GroupRatioSource = types.GroupRatioSourceUserOverride
 	}
 
 	return groupRatioInfo
@@ -96,27 +110,36 @@ func priceToQuotaPerToken(price float64) float64 {
 	return price / 1_000_000 * common.QuotaPerUnit
 }
 
-// minFeeToQuota 把「美元最低费用」折算成内部 quota；fee<=0 返回 0。
-func minFeeToQuota(fee float64, groupRatio float64) int {
-	if fee <= 0 {
-		return 0
+// minFeeToQuota 把「美元最低费用」折算成内部 quota；非正费用或倍率返回 0。
+// 最低费用向上取整后仍统一走 quota 饱和转换，避免 Decimal.IntPart 的
+// int64 结果在转为 int 时溢出并反向变成负数。
+func minFeeToQuota(fee float64, groupRatio float64) (int, *common.QuotaClamp) {
+	if fee <= 0 || groupRatio <= 0 {
+		return 0, nil
 	}
-	return int(decimal.NewFromFloat(fee).
+	if math.IsNaN(fee) || math.IsNaN(groupRatio) {
+		return common.QuotaFromFloatChecked(math.NaN())
+	}
+	if math.IsInf(fee, 1) || math.IsInf(groupRatio, 1) {
+		return common.QuotaFromFloatChecked(math.Inf(1))
+	}
+	quotaDecimal := decimal.NewFromFloat(fee).
 		Mul(decimal.NewFromFloat(common.QuotaPerUnit)).
 		Mul(decimal.NewFromFloat(groupRatio)).
-		Ceil().
-		IntPart())
+		Ceil()
+	return common.QuotaFromDecimalChecked(quotaDecimal)
 }
 
-// computeMinQuota 解析最低费用下限：分组强制值优先（不乘倍率），否则模型级默认值（乘倍率）。
-func computeMinQuota(override *types.ModelGroupPricing, modelName string, groupRatio float64) int {
+// computeMinQuota 解析最低费用下限：分组强制值优先，仅叠加个人分组倍率；
+// 否则模型级默认值使用最终分组倍率。
+func computeMinQuota(override *types.ModelGroupPricing, modelName string, groupRatio float64, personalMultiplier float64) (int, *common.QuotaClamp) {
 	if override != nil && override.MinFee != nil {
-		return minFeeToQuota(*override.MinFee, 1.0)
+		return minFeeToQuota(*override.MinFee, personalMultiplier)
 	}
 	if modelMinFee, ok := ratio_setting.GetModelMinFee(modelName); ok {
 		return minFeeToQuota(modelMinFee, groupRatio)
 	}
-	return 0
+	return 0, nil
 }
 
 func applyTokenPriceOverrides(priceData *types.PriceData, promptTokens int, completionTokens int) error {
@@ -124,6 +147,7 @@ func applyTokenPriceOverrides(priceData *types.PriceData, promptTokens int, comp
 		return nil
 	}
 	override := priceData.GroupPriceOverride
+	personalMultiplier := decimal.NewFromFloat(priceData.PersonalGroupPriceMultiplier())
 	if override.PromptPrice == nil && override.CompletionPrice == nil {
 		return nil
 	}
@@ -136,14 +160,14 @@ func applyTokenPriceOverrides(priceData *types.PriceData, promptTokens int, comp
 	completionTokenDecimal := decimal.NewFromInt(int64(completionTokens))
 	quotaDecimal := decimal.Zero
 	if override.PromptPrice != nil {
-		quotaDecimal = quotaDecimal.Add(promptTokenDecimal.Mul(decimal.NewFromFloat(priceToQuotaPerToken(*override.PromptPrice))))
+		quotaDecimal = quotaDecimal.Add(promptTokenDecimal.Mul(decimal.NewFromFloat(priceToQuotaPerToken(*override.PromptPrice))).Mul(personalMultiplier))
 	} else {
 		quotaDecimal = quotaDecimal.Add(promptTokenDecimal.
 			Mul(decimal.NewFromFloat(priceData.ModelRatio)).
 			Mul(decimal.NewFromFloat(priceData.GroupRatioInfo.GroupRatio)))
 	}
 	if override.CompletionPrice != nil {
-		quotaDecimal = quotaDecimal.Add(completionTokenDecimal.Mul(decimal.NewFromFloat(priceToQuotaPerToken(*override.CompletionPrice))))
+		quotaDecimal = quotaDecimal.Add(completionTokenDecimal.Mul(decimal.NewFromFloat(priceToQuotaPerToken(*override.CompletionPrice))).Mul(personalMultiplier))
 	} else {
 		quotaDecimal = quotaDecimal.Add(completionTokenDecimal.
 			Mul(decimal.NewFromFloat(priceData.ModelRatio)).
@@ -174,7 +198,7 @@ func applyPerCallPriceOverrides(priceData *types.PriceData) error {
 		return nil
 	}
 	priceData.ModelPrice = *priceData.GroupPriceOverride.ModelPrice
-	quota, err := common.QuotaFromFloatStrict(priceData.ModelPrice * common.QuotaPerUnit)
+	quota, err := common.QuotaFromFloatStrict(priceData.ModelPrice * common.QuotaPerUnit * priceData.PersonalGroupPriceMultiplier())
 	if err != nil {
 		return err
 	}
@@ -188,6 +212,12 @@ func applyPerCallPriceOverrides(priceData *types.PriceData) error {
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (types.PriceData, error) {
+	// Repricing can happen when an auto-group retry selects a different group.
+	// Clear the previous tiered snapshot so switching from tiered to another
+	// billing mode cannot settle with the previous group's expression. Keep the
+	// request input: it belongs to the request, and retries reuse the same body.
+	info.TieredBillingSnapshot = nil
+
 	modelPrice, usePrice := ratio_setting.GetModelPrice(info.OriginModelName, false)
 
 	groupRatioInfo := HandleGroupRatio(c, info)
@@ -305,7 +335,15 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		GroupPriceOverride:   groupRatioInfo.ModelGroupPricing,
 	}
 	if !usePrice {
-		priceData.MinQuota = computeMinQuota(groupRatioInfo.ModelGroupPricing, info.OriginModelName, groupRatioInfo.GroupRatio)
+		var minFeeClamp *common.QuotaClamp
+		priceData.MinQuota, minFeeClamp = computeMinQuota(groupRatioInfo.ModelGroupPricing, info.OriginModelName, groupRatioInfo.GroupRatio, priceData.PersonalGroupPriceMultiplier())
+		if minFeeClamp != nil {
+			if info.QuotaClamp == nil {
+				info.QuotaClamp = minFeeClamp
+			}
+			logger.LogWarn(c, fmt.Sprintf("minimum fee quota saturation: op=%s kind=%s original=%g clamped=%d user=%d model=%s",
+				minFeeClamp.Op, minFeeClamp.Kind, minFeeClamp.Original, minFeeClamp.Clamped, info.UserId, info.OriginModelName))
+		}
 	}
 	if usePrice {
 		for name, ratio := range meta.BillingRatios {
@@ -321,7 +359,7 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	if usePrice {
 		preConsumeGroupRatio := groupRatioInfo.GroupRatio
 		if priceData.GroupPriceOverride != nil && priceData.GroupPriceOverride.ModelPrice != nil {
-			preConsumeGroupRatio = 1
+			preConsumeGroupRatio = priceData.PersonalGroupPriceMultiplier()
 		}
 		quotaToPreConsume := priceData.ApplyOtherRatiosToFloat(priceData.ModelPrice * common.QuotaPerUnit * preConsumeGroupRatio)
 		quota, err := common.QuotaFromFloatStrict(quotaToPreConsume)

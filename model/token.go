@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -332,7 +333,21 @@ func (token *Token) Delete() (err error) {
 			})
 		}
 	}()
-	err = DB.Delete(token).Error
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		var references int64
+		if err := tx.Model(&ModelHealthTarget{}).
+			Where("mode = ? AND token_id = ?", ModelHealthModeLocal, token.Id).
+			Count(&references).Error; err != nil {
+			return err
+		}
+		if references > 0 {
+			return fmt.Errorf("%w: token %d has %d target references", ErrModelHealthProbeTokenInUse, token.Id, references)
+		}
+		if err := tx.Where("token_id = ?", token.Id).Delete(&ModelHealthProbeToken{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(token).Error
+	})
 	return err
 }
 
@@ -380,63 +395,23 @@ func DeleteTokenById(id int, userId int) (err error) {
 }
 
 func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
-	if quota < 0 {
-		return errors.New("quota 不能为负数！")
+	if err := IncreaseTokenQuotaTx(DB, tokenId, quota); err != nil {
+		return err
 	}
-	if common.RedisEnabled {
-		gopool.Go(func() {
-			err := cacheIncrTokenQuota(key, int64(quota))
-			if err != nil {
-				common.SysLog("failed to increase token quota: " + err.Error())
-			}
-		})
+	if quota > 0 {
+		invalidateBillingQuotaCaches(0, key)
 	}
-	if common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeTokenQuota, tokenId, quota)
-		return nil
-	}
-	return increaseTokenQuota(tokenId, quota)
-}
-
-func increaseTokenQuota(id int, quota int) (err error) {
-	err = DB.Model(&Token{}).Where("id = ?", id).Updates(
-		map[string]interface{}{
-			"remain_quota":  gorm.Expr("remain_quota + ?", quota),
-			"used_quota":    gorm.Expr("used_quota - ?", quota),
-			"accessed_time": common.GetTimestamp(),
-		},
-	).Error
-	return err
+	return nil
 }
 
 func DecreaseTokenQuota(id int, key string, quota int) (err error) {
-	if quota < 0 {
-		return errors.New("quota 不能为负数！")
+	if err := DecreaseTokenQuotaTx(DB, id, quota); err != nil {
+		return err
 	}
-	if common.RedisEnabled {
-		gopool.Go(func() {
-			err := cacheDecrTokenQuota(key, int64(quota))
-			if err != nil {
-				common.SysLog("failed to decrease token quota: " + err.Error())
-			}
-		})
+	if quota > 0 {
+		invalidateBillingQuotaCaches(0, key)
 	}
-	if common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeTokenQuota, id, -quota)
-		return nil
-	}
-	return decreaseTokenQuota(id, quota)
-}
-
-func decreaseTokenQuota(id int, quota int) (err error) {
-	err = DB.Model(&Token{}).Where("id = ?", id).Updates(
-		map[string]interface{}{
-			"remain_quota":  gorm.Expr("remain_quota - ?", quota),
-			"used_quota":    gorm.Expr("used_quota + ?", quota),
-			"accessed_time": common.GetTimestamp(),
-		},
-	).Error
-	return err
+	return nil
 }
 
 // CountUserTokens returns total number of tokens for the given user, used for pagination
@@ -458,6 +433,29 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	if err := tx.Where("user_id = ? AND id IN (?)", userId, ids).Find(&tokens).Error; err != nil {
 		tx.Rollback()
 		return 0, err
+	}
+	tokenIDs := make([]int, 0, len(tokens))
+	for _, token := range tokens {
+		tokenIDs = append(tokenIDs, token.Id)
+	}
+	if len(tokenIDs) > 0 {
+		var referenced []int
+		if err := tx.Model(&ModelHealthTarget{}).
+			Where("mode = ? AND token_id IN ?", ModelHealthModeLocal, tokenIDs).
+			Distinct("token_id").
+			Pluck("token_id", &referenced).Error; err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+		if len(referenced) > 0 {
+			tx.Rollback()
+			sort.Ints(referenced)
+			return 0, fmt.Errorf("%w: token ids %v", ErrModelHealthProbeTokenInUse, referenced)
+		}
+		if err := tx.Where("token_id IN ?", tokenIDs).Delete(&ModelHealthProbeToken{}).Error; err != nil {
+			tx.Rollback()
+			return 0, err
+		}
 	}
 
 	if err := tx.Where("user_id = ? AND id IN (?)", userId, ids).Delete(&Token{}).Error; err != nil {

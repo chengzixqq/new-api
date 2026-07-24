@@ -3,6 +3,7 @@ package helper
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
@@ -23,9 +25,8 @@ import (
 )
 
 const (
-	InitialScannerBufferSize    = 64 << 10  // 64KB (64*1024)
-	DefaultMaxScannerBufferSize = 128 << 20 // 64MB (64*1024*1024) default SSE buffer size
-	DefaultPingInterval         = 10 * time.Second
+	InitialScannerBufferSize = 64 << 10 // 64KB (64*1024)
+	DefaultPingInterval      = 10 * time.Second
 	// streamWriteTimeout bounds a single blocked write to a slow client so the
 	// unconditional wg.Wait() in cleanup can always finish. Without it, a slow
 	// but connected client (full TCP buffer, no server WriteTimeout) could hang
@@ -33,16 +34,20 @@ const (
 	streamWriteTimeout = 30 * time.Second
 )
 
-func getScannerBufferSize() int {
-	if constant.StreamScannerMaxBufferMB > 0 {
-		return constant.StreamScannerMaxBufferMB << 20
+func getScannerBufferSize(info *relaycommon.RelayInfo) int {
+	if info != nil && info.ChannelMeta != nil {
+		return model_setting.GetSSEMaxEventSizeBytes(info.ChannelSetting.SSEMaxEventSizeMB)
 	}
-	return DefaultMaxScannerBufferSize
+	return model_setting.GetSSEMaxEventSizeBytes(nil)
 }
 
-func NewStreamScanner(reader io.Reader) *bufio.Scanner {
+func NewStreamScanner(reader io.Reader, relayInfos ...*relaycommon.RelayInfo) *bufio.Scanner {
+	var info *relaycommon.RelayInfo
+	if len(relayInfos) > 0 {
+		info = relayInfos[0]
+	}
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, InitialScannerBufferSize), getScannerBufferSize())
+	scanner.Buffer(make([]byte, InitialScannerBufferSize), getScannerBufferSize(info))
 	return scanner
 }
 
@@ -82,6 +87,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	// 无条件新建 StreamStatus
 	info.StreamStatus = relaycommon.NewStreamStatus()
+	info.ResetStreamOutputStarted()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -89,7 +95,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	var (
 		stopChan    = make(chan bool, 3) // 增加缓冲区避免阻塞
-		scanner     = NewStreamScanner(resp.Body)
+		scanner     = NewStreamScanner(resp.Body, info)
 		ticker      = time.NewTicker(streamingTimeout)
 		pingTicker  *time.Ticker
 		writeMutex  sync.Mutex     // Mutex to protect concurrent writes
@@ -211,15 +217,22 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		sr := newStreamResult(info.StreamStatus)
 		for data := range dataChan {
 			sr.reset()
+			wroteBody := false
 			func() {
 				writeMutex.Lock()
 				defer writeMutex.Unlock()
+				writtenBefore := c.Writer.Size()
+				if writtenBefore < 0 {
+					writtenBefore = 0
+				}
 				ExtendWriteDeadline(c)
 				dataHandler(data, sr)
+				wroteBody = c.Writer.Size() > writtenBefore
 			}()
-			// Stamp the first client-write moment for upstream tracing (no-op when
-			// tracing is off or already stamped). FlushDelayMs = FirstSSEAt -> here.
-			info.SetFirstFlushTime()
+			if wroteBody {
+				info.MarkStreamOutputStarted()
+				info.SetFirstFlushTime()
+			}
 			if sr.IsStopped() {
 				return
 			}
@@ -285,8 +298,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 		if err := scanner.Err(); err != nil {
 			if err != io.EOF {
+				if errors.Is(err, bufio.ErrTooLong) {
+					logger.LogWarn(c, fmt.Sprintf("upstream SSE event exceeded configured limit: max_bytes=%d", getScannerBufferSize(info)))
+					info.StreamStatus.MarkSSELimitExceeded(err)
+				} else {
+					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
+				}
 				logger.LogError(c, "scanner error: "+err.Error())
-				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
 			}
 		}
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)

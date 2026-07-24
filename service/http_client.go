@@ -18,18 +18,26 @@ import (
 )
 
 const (
-	upstreamIdleConnTimeout   = 90 * time.Second
-	upstreamH2ReadIdleTimeout = 15 * time.Second
-	upstreamH2PingTimeout     = 5 * time.Second
+	upstreamIdleConnTimeout       = 90 * time.Second
+	upstreamH2ReadIdleTimeout     = 15 * time.Second
+	upstreamH2PingTimeout         = 5 * time.Second
+	upstreamDialTimeout           = 30 * time.Second
+	upstreamTLSHandshakeTimeout   = 10 * time.Second
+	upstreamResponseHeaderTimeout = 300 * time.Second
+	mediaResponseHeaderTimeout    = 30 * time.Second
+	upstreamExpectContinueTimeout = time.Second
+	upstreamTCPKeepAlive          = 30 * time.Second
 )
 
 var (
 	httpClient              *http.Client
 	httpClientH1            *http.Client
+	mediaWorkerHTTPClient   *http.Client
 	ssrfProtectedHTTPClient *http.Client
 	proxyClientLock         sync.Mutex
 	proxyClients            = make(map[string]*http.Client)
 	proxyClientsH1          = make(map[string]*http.Client)
+	mediaProxyClients       = make(map[string]*http.Client)
 )
 
 func checkRedirect(req *http.Request, via []*http.Request) error {
@@ -44,12 +52,14 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 }
 
 func checkProtectedFetchRedirect(req *http.Request, via []*http.Request) error {
-	urlStr := req.URL.String()
-	if err := ValidateSSRFProtectedFetchURL(urlStr); err != nil {
-		return fmt.Errorf("redirect to %s blocked: %v", urlStr, err)
-	}
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
+	}
+	// The protected RoundTripper resolves and validates every redirect target
+	// exactly once before dialing it. Resolving here as well would reintroduce a
+	// DNS time-of-check/time-of-use window.
+	if req == nil || req.URL == nil || (req.URL.Scheme != "http" && req.URL.Scheme != "https") {
+		return fmt.Errorf("redirect target uses an unsupported protocol")
 	}
 	return nil
 }
@@ -63,9 +73,17 @@ func ValidateSSRFProtectedFetchURL(urlStr string) error {
 	return validateURLWithCurrentFetchSetting(urlStr, true)
 }
 
-func InitHttpClient() {
-	transport, _, _ := buildUpstreamTransport(http.ProxyFromEnvironment, nil)
+func InitHttpClient() error {
+	if err := validateUpstreamTimeoutConfig(); err != nil {
+		return err
+	}
+
+	transport, _, err := buildUpstreamTransport(http.ProxyFromEnvironment, nil)
+	if err != nil {
+		return fmt.Errorf("initialize HTTP/2 transport: %w", err)
+	}
 	httpClient = buildUpstreamHTTPClient(transport)
+	mediaWorkerHTTPClient = buildMediaWorkerHTTPClient(transport)
 
 	h1Transport := buildUpstreamTransportHTTP1Only(http.ProxyFromEnvironment, nil)
 	httpClientH1 = buildUpstreamHTTPClient(h1Transport)
@@ -74,6 +92,34 @@ func InitHttpClient() {
 	// Kept separate from the general upstream client so normal relay/provider traffic is
 	// not forced through the SSRF dialer.
 	ssrfProtectedHTTPClient = newProtectedFetchHTTPClient()
+	return nil
+}
+
+func validateUpstreamTimeoutConfig() error {
+	if common.RelayTimeout < 0 {
+		return fmt.Errorf("RELAY_TIMEOUT must be greater than or equal to 0")
+	}
+	settings := []struct {
+		name  string
+		value int
+	}{
+		{name: "RELAY_DIAL_TIMEOUT", value: common.RelayDialTimeout},
+		{name: "RELAY_TLS_HANDSHAKE_TIMEOUT", value: common.RelayTLSHandshakeTimeout},
+		{name: "RELAY_RESPONSE_HEADER_TIMEOUT", value: common.RelayResponseHeaderTimeout},
+	}
+	for _, setting := range settings {
+		if setting.value <= 0 {
+			return fmt.Errorf("%s must be greater than 0", setting.name)
+		}
+	}
+	return nil
+}
+
+func configuredUpstreamTimeout(seconds int, fallback time.Duration) time.Duration {
+	if seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func buildUpstreamTLSConfig() *tls.Config {
@@ -91,14 +137,24 @@ func buildUpstreamTransport(proxyFunc func(*http.Request) (*url.URL, error), dia
 	if common.RelayIdleConnTimeout > 0 {
 		idleConnTimeout = time.Duration(common.RelayIdleConnTimeout) * time.Second
 	}
+	if dialContext == nil {
+		dialer := &net.Dialer{
+			Timeout:   configuredUpstreamTimeout(common.RelayDialTimeout, upstreamDialTimeout),
+			KeepAlive: upstreamTCPKeepAlive,
+		}
+		dialContext = dialer.DialContext
+	}
 	transport := &http.Transport{
-		MaxIdleConns:        common.RelayMaxIdleConns,
-		MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-		ForceAttemptHTTP2:   true,
-		Proxy:               proxyFunc,
-		DialContext:         dialContext,
-		IdleConnTimeout:     idleConnTimeout,
-		TLSClientConfig:     buildUpstreamTLSConfig(),
+		MaxIdleConns:          common.RelayMaxIdleConns,
+		MaxIdleConnsPerHost:   common.RelayMaxIdleConnsPerHost,
+		ForceAttemptHTTP2:     true,
+		Proxy:                 proxyFunc,
+		DialContext:           dialContext,
+		IdleConnTimeout:       idleConnTimeout,
+		TLSHandshakeTimeout:   configuredUpstreamTimeout(common.RelayTLSHandshakeTimeout, upstreamTLSHandshakeTimeout),
+		ResponseHeaderTimeout: configuredUpstreamTimeout(common.RelayResponseHeaderTimeout, upstreamResponseHeaderTimeout),
+		ExpectContinueTimeout: upstreamExpectContinueTimeout,
+		TLSClientConfig:       buildUpstreamTLSConfig(),
 	}
 	h2t, err := enableUpstreamH2Keepalive(transport)
 	return transport, h2t, err
@@ -111,14 +167,24 @@ func buildUpstreamTransportHTTP1Only(proxyFunc func(*http.Request) (*url.URL, er
 	}
 	tlsConf := buildUpstreamTLSConfig()
 	tlsConf.NextProtos = []string{"http/1.1"}
+	if dialContext == nil {
+		dialer := &net.Dialer{
+			Timeout:   configuredUpstreamTimeout(common.RelayDialTimeout, upstreamDialTimeout),
+			KeepAlive: upstreamTCPKeepAlive,
+		}
+		dialContext = dialer.DialContext
+	}
 	return &http.Transport{
-		MaxIdleConns:        common.RelayMaxIdleConns,
-		MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-		ForceAttemptHTTP2:   false,
-		Proxy:               proxyFunc,
-		DialContext:         dialContext,
-		IdleConnTimeout:     idleConnTimeout,
-		TLSClientConfig:     tlsConf,
+		MaxIdleConns:          common.RelayMaxIdleConns,
+		MaxIdleConnsPerHost:   common.RelayMaxIdleConnsPerHost,
+		ForceAttemptHTTP2:     false,
+		Proxy:                 proxyFunc,
+		DialContext:           dialContext,
+		IdleConnTimeout:       idleConnTimeout,
+		TLSHandshakeTimeout:   configuredUpstreamTimeout(common.RelayTLSHandshakeTimeout, upstreamTLSHandshakeTimeout),
+		ResponseHeaderTimeout: configuredUpstreamTimeout(common.RelayResponseHeaderTimeout, upstreamResponseHeaderTimeout),
+		ExpectContinueTimeout: upstreamExpectContinueTimeout,
+		TLSClientConfig:       tlsConf,
 	}
 }
 
@@ -134,14 +200,16 @@ func enableUpstreamH2Keepalive(transport *http.Transport) (*http2.Transport, err
 }
 
 func buildUpstreamHTTPClient(transport *http.Transport) *http.Client {
-	client := &http.Client{
+	return &http.Client{
 		Transport:     transport,
 		CheckRedirect: checkRedirect,
 	}
-	if common.RelayTimeout != 0 {
-		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
-	}
-	return client
+}
+
+func buildMediaWorkerHTTPClient(transport *http.Transport) *http.Client {
+	mediaTransport := transport.Clone()
+	mediaTransport.ResponseHeaderTimeout = mediaResponseHeaderTimeout
+	return buildUpstreamHTTPClient(mediaTransport)
 }
 
 // GetHttpClient returns the general outbound client used by relay/provider
@@ -159,12 +227,53 @@ func GetHttpClientHTTP1Only() *http.Client {
 	return httpClientH1
 }
 
+func GetMediaWorkerHTTPClient() *http.Client {
+	return mediaWorkerHTTPClient
+}
+
+// GetMediaHTTPClientWithProxy returns a provider client with the media-specific
+// response-header timeout. The full body lifetime remains controlled by the
+// request context so long, continuously flowing videos are not cut off.
+func GetMediaHTTPClientWithProxy(proxyURL string) (*http.Client, error) {
+	if proxyURL == "" {
+		if mediaWorkerHTTPClient == nil {
+			return nil, fmt.Errorf("media HTTP client is not initialized")
+		}
+		return mediaWorkerHTTPClient, nil
+	}
+
+	proxyClientLock.Lock()
+	if client, ok := mediaProxyClients[proxyURL]; ok {
+		proxyClientLock.Unlock()
+		return client, nil
+	}
+	proxyClientLock.Unlock()
+
+	baseClient, err := GetHttpClientWithProxy(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	baseTransport, ok := baseClient.Transport.(*http.Transport)
+	if !ok || baseTransport == nil {
+		return nil, fmt.Errorf("media proxy client has an unsupported transport")
+	}
+	client := buildMediaWorkerHTTPClient(baseTransport)
+
+	proxyClientLock.Lock()
+	defer proxyClientLock.Unlock()
+	if cached, ok := mediaProxyClients[proxyURL]; ok {
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+		return cached, nil
+	}
+	mediaProxyClients[proxyURL] = client
+	return client, nil
+}
+
 // GetSSRFProtectedHTTPClient 返回带拨号时 SSRF 校验的客户端。
 // ssrfProtectedHTTPClient 由 InitHttpClient 在启动时初始化，运行期只读。
 func GetSSRFProtectedHTTPClient() *http.Client {
-	if fetchSetting := system_setting.GetFetchSetting(); fetchSetting != nil && !fetchSetting.EnableSSRFProtection {
-		return GetHttpClient()
-	}
 	return ssrfProtectedHTTPClient
 }
 
@@ -179,7 +288,6 @@ func GetHttpClientWithProxy(proxyURL string) (*http.Client, error) {
 // ResetProxyClientCache 清空代理客户端缓存，确保下次使用时重新初始化
 func ResetProxyClientCache() {
 	proxyClientLock.Lock()
-	defer proxyClientLock.Unlock()
 	for _, client := range proxyClients {
 		if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
 			transport.CloseIdleConnections()
@@ -192,6 +300,47 @@ func ResetProxyClientCache() {
 		}
 	}
 	proxyClientsH1 = make(map[string]*http.Client)
+	for _, client := range mediaProxyClients {
+		if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+			transport.CloseIdleConnections()
+		}
+	}
+	mediaProxyClients = make(map[string]*http.Client)
+	proxyClientLock.Unlock()
+
+	resetUpstreamHTTP2PoolCache()
+}
+
+func dialProxyContext(ctx context.Context, dialer proxy.Dialer, network, addr string) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+		return contextDialer.DialContext(ctx, network, addr)
+	}
+
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	resultCh := make(chan dialResult)
+	go func() {
+		conn, err := dialer.Dial(network, addr)
+		select {
+		case resultCh <- dialResult{conn: conn, err: err}:
+		case <-ctx.Done():
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case result := <-resultCh:
+		return result.conn, result.err
+	}
 }
 
 // NewProxyHttpClient 创建支持代理的 HTTP 客户端
@@ -211,7 +360,7 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 
 	parsedURL, err := url.Parse(proxyURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid proxy URL")
 	}
 
 	switch parsedURL.Scheme {
@@ -239,13 +388,17 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 
 		// 创建 SOCKS5 代理拨号器
 		// proxy.SOCKS5 使用 tcp 参数，所有 TCP 连接包括 DNS 查询都将通过代理进行。行为与 socks5h 相同
-		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, proxy.Direct)
+		forwardDialer := &net.Dialer{
+			Timeout:   configuredUpstreamTimeout(common.RelayDialTimeout, upstreamDialTimeout),
+			KeepAlive: upstreamTCPKeepAlive,
+		}
+		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, forwardDialer)
 		if err != nil {
 			return nil, err
 		}
 
 		transport, _, err := buildUpstreamTransport(nil, func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
+			return dialProxyContext(ctx, dialer, network, addr)
 		})
 		if err != nil {
 			return nil, err
@@ -273,7 +426,7 @@ func NewProxyHttpClientHTTP1Only(proxyURL string) (*http.Client, error) {
 
 	parsedURL, err := url.Parse(proxyURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid proxy URL")
 	}
 
 	var transport *http.Transport
@@ -292,12 +445,16 @@ func NewProxyHttpClientHTTP1Only(proxyURL string) (*http.Client, error) {
 				auth.Password = password
 			}
 		}
-		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, proxy.Direct)
+		forwardDialer := &net.Dialer{
+			Timeout:   configuredUpstreamTimeout(common.RelayDialTimeout, upstreamDialTimeout),
+			KeepAlive: upstreamTCPKeepAlive,
+		}
+		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, forwardDialer)
 		if err != nil {
 			return nil, err
 		}
 		transport = buildUpstreamTransportHTTP1Only(nil, func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
+			return dialProxyContext(ctx, dialer, network, addr)
 		})
 
 	default:

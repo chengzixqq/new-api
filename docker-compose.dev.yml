@@ -28,6 +28,8 @@ services:
       - dev_data:/data
     environment:
       - SQL_DSN=postgresql://root:123456@postgres:5432/new-api
+      - SQL_MAX_OPEN_CONNS=80
+      - SQL_MAX_IDLE_CONNS=20
       - REDIS_CONN_STRING=redis://redis
       - TZ=Asia/Shanghai
       - BATCH_UPDATE_ENABLED=true

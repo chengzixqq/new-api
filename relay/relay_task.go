@@ -2,12 +2,14 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -202,11 +204,16 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		noteTaskQuotaClamp(info, clamp)
 	}
 
-	// 7. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
-	if info.Billing == nil && !info.PriceData.FreeModel {
-		info.ForcePreConsume = true
-		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
-			return nil, service.TaskErrorFromAPIError(apiErr)
+	// 7. 预扣费。自动分组重试会重新定价；若新分组更贵，必须在发送
+	// 上游请求前把已有计费会话的预扣额度补到新的目标值。
+	if !info.PriceData.FreeModel {
+		if info.Billing == nil {
+			info.ForcePreConsume = true
+			if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
+				return nil, service.TaskErrorFromAPIError(apiErr)
+			}
+		} else if reserveErr := info.Billing.Reserve(info.PriceData.Quota); reserveErr != nil {
+			return nil, service.TaskErrorWrapper(reserveErr, "pre_consume_quota_failed", http.StatusForbidden)
 		}
 	}
 
@@ -388,7 +395,7 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 	isOpenAIVideoAPI := strings.HasPrefix(c.Request.RequestURI, "/v1/videos/")
 
 	// Gemini/Vertex 支持实时查询：用户 fetch 时直接从上游拉取最新状态
-	if realtimeResp := tryRealtimeFetch(originTask, isOpenAIVideoAPI); len(realtimeResp) > 0 {
+	if realtimeResp := tryRealtimeFetch(c.Request.Context(), originTask, isOpenAIVideoAPI); len(realtimeResp) > 0 {
 		respBody = realtimeResp
 		return
 	}
@@ -427,7 +434,7 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 // tryRealtimeFetch 尝试从上游实时拉取 Gemini/Vertex 任务状态。
 // 仅当渠道类型为 Gemini 或 Vertex 时触发；其他渠道或出错时返回 nil。
 // 当非 OpenAI Video API 时，还会构建自定义格式的响应体。
-func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
+func tryRealtimeFetch(ctx context.Context, task *model.Task, isOpenAIVideoAPI bool) []byte {
 	channelModel, err := model.GetChannelById(task.ChannelId, true)
 	if err != nil {
 		return nil
@@ -446,7 +453,8 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		return nil
 	}
 
-	resp, err := adaptor.FetchTask(baseURL, channelModel.Key, map[string]any{
+	ctx = service.WithChannelUpstreamHTTPPolicy(ctx, channelModel.Id, channelModel.GetOtherSettings())
+	resp, err := adaptor.FetchTask(ctx, baseURL, channelModel.Key, map[string]any{
 		"task_id": task.GetUpstreamTaskID(),
 		"action":  task.Action,
 	}, proxy)
@@ -473,6 +481,9 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 	if ti.Progress != "" {
 		task.Progress = ti.Progress
 	}
+	if ti.Reason != "" {
+		task.FailReason = ti.Reason
+	}
 	if strings.HasPrefix(ti.Url, "data:") {
 		// data: URI — kept in Data, not ResultURL
 	} else if ti.Url != "" {
@@ -482,8 +493,42 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		task.PrivateData.ResultURL = taskcommon.BuildProxyURL(task.TaskID)
 	}
 
-	if !snap.Equal(task.Snapshot()) {
-		_, _ = task.UpdateWithStatus(snap.Status)
+	switch task.Status {
+	case model.TaskStatusFailure:
+		task.Progress = taskcommon.ProgressComplete
+		if task.FinishTime == 0 {
+			task.FinishTime = time.Now().Unix()
+		}
+		if err := service.RefundTaskQuota(ctx, task, task.FailReason); err != nil {
+			return nil
+		}
+	case model.TaskStatusSuccess:
+		task.Progress = taskcommon.ProgressComplete
+		if task.FinishTime == 0 {
+			task.FinishTime = time.Now().Unix()
+		}
+		actualQuota := task.Quota
+		perCallBilling := task.PrivateData.BillingContext != nil && task.PrivateData.BillingContext.PerCallBilling
+		adaptorAdjusted := false
+		if !perCallBilling {
+			if adjustedQuota := adaptor.AdjustBillingOnComplete(task, ti); adjustedQuota > 0 {
+				actualQuota = adjustedQuota
+				adaptorAdjusted = true
+			}
+		}
+		var settleErr error
+		if !perCallBilling && !adaptorAdjusted && ti.TotalTokens > 0 {
+			settleErr = service.RecalculateTaskQuotaByTokens(ctx, task, ti.TotalTokens)
+		} else {
+			settleErr = service.RecalculateTaskQuota(ctx, task, actualQuota, "实时查询任务完成")
+		}
+		if settleErr != nil {
+			return nil
+		}
+	default:
+		if !snap.Equal(task.Snapshot()) {
+			_, _ = task.UpdateWithStatus(snap.Status)
+		}
 	}
 
 	// OpenAI Video API 由调用者的 ConvertToOpenAIVideo 分支处理

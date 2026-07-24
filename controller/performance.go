@@ -12,7 +12,10 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -28,6 +31,8 @@ type PerformanceStats struct {
 	DiskSpaceInfo common.DiskSpaceInfo `json:"disk_space_info"`
 	// 配置信息
 	Config PerformanceConfig `json:"config"`
+	// 上游 HTTP/2 分片池统计（不包含 URL、代理或凭证）
+	UpstreamHTTP service.UpstreamHTTPPoolStats `json:"upstream_http"`
 }
 
 // MemoryStats 内存统计
@@ -68,6 +73,16 @@ type PerformanceConfig struct {
 	DiskCachePath string `json:"disk_cache_path"`
 	// 是否在容器中运行
 	IsRunningInContainer bool `json:"is_running_in_container"`
+	// 当前生效的全局 SSE 单事件大小（MiB），已解析数据库、环境变量与默认值优先级
+	SSEMaxEventSizeMB int `json:"sse_max_event_size_mb"`
+	// Effective upstream HTTP settings after global option, environment, and
+	// compiled-default resolution. Channel overrides are intentionally excluded.
+	UpstreamHTTPMode              dto.UpstreamHTTPMode                   `json:"upstream_http_mode"`
+	HTTP2ConnectionPoolSize       int                                    `json:"http2_connection_pool_size"`
+	HTTP1BodyThresholdKiB         int                                    `json:"http1_body_threshold_kib"`
+	UpstreamHTTPModeSource        model_setting.UpstreamHTTPConfigSource `json:"upstream_http_mode_source"`
+	HTTP2ConnectionPoolSizeSource model_setting.UpstreamHTTPConfigSource `json:"http2_connection_pool_size_source"`
+	HTTP1BodyThresholdKiBSource   model_setting.UpstreamHTTPConfigSource `json:"http1_body_threshold_kib_source"`
 
 	// MonitorEnabled 是否启用性能监控
 	MonitorEnabled bool `json:"monitor_enabled"`
@@ -95,16 +110,24 @@ func GetPerformanceStats(c *gin.Context) {
 	// 获取配置信息
 	diskConfig := common.GetDiskCacheConfig()
 	monitorConfig := common.GetPerformanceMonitorConfig()
+	upstreamHTTPConfig := model_setting.ResolveUpstreamHTTPConfig(dto.ChannelOtherSettings{})
 	config := PerformanceConfig{
-		DiskCacheEnabled:       diskConfig.Enabled,
-		DiskCacheThresholdMB:   diskConfig.ThresholdMB,
-		DiskCacheMaxSizeMB:     diskConfig.MaxSizeMB,
-		DiskCachePath:          diskConfig.Path,
-		IsRunningInContainer:   common.IsRunningInContainer(),
-		MonitorEnabled:         monitorConfig.Enabled,
-		MonitorCPUThreshold:    monitorConfig.CPUThreshold,
-		MonitorMemoryThreshold: monitorConfig.MemoryThreshold,
-		MonitorDiskThreshold:   monitorConfig.DiskThreshold,
+		DiskCacheEnabled:              diskConfig.Enabled,
+		DiskCacheThresholdMB:          diskConfig.ThresholdMB,
+		DiskCacheMaxSizeMB:            diskConfig.MaxSizeMB,
+		DiskCachePath:                 diskConfig.Path,
+		IsRunningInContainer:          common.IsRunningInContainer(),
+		SSEMaxEventSizeMB:             model_setting.GetSSEMaxEventSizeBytes(nil) >> 20,
+		UpstreamHTTPMode:              upstreamHTTPConfig.Mode,
+		HTTP2ConnectionPoolSize:       upstreamHTTPConfig.HTTP2ConnectionPoolSize,
+		HTTP1BodyThresholdKiB:         upstreamHTTPConfig.HTTP1BodyThresholdKiB,
+		UpstreamHTTPModeSource:        upstreamHTTPConfig.ModeSource,
+		HTTP2ConnectionPoolSizeSource: upstreamHTTPConfig.HTTP2ConnectionPoolSource,
+		HTTP1BodyThresholdKiBSource:   upstreamHTTPConfig.HTTP1BodyThresholdSource,
+		MonitorEnabled:                monitorConfig.Enabled,
+		MonitorCPUThreshold:           monitorConfig.CPUThreshold,
+		MonitorMemoryThreshold:        monitorConfig.MemoryThreshold,
+		MonitorDiskThreshold:          monitorConfig.DiskThreshold,
 	}
 
 	// 获取磁盘空间信息
@@ -131,6 +154,7 @@ func GetPerformanceStats(c *gin.Context) {
 		DiskCacheInfo: diskCacheInfo,
 		DiskSpaceInfo: diskSpaceInfo,
 		Config:        config,
+		UpstreamHTTP:  service.GetUpstreamHTTPPoolStats(),
 	}
 
 	c.JSON(http.StatusOK, gin.H{

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { SettingsPage } from '../components/settings-page'
-import type { ContentSettings, SystemOption } from '../types'
+import type { ContentSettings } from '../types'
 import {
   CONTENT_DEFAULT_SECTION,
   getContentSectionContent,
@@ -28,11 +28,30 @@ const defaultContentSettings: ContentSettings = {
   'console_setting.api_info': '[]',
   'console_setting.announcements': '[]',
   'console_setting.faq': '[]',
-  'console_setting.uptime_kuma_groups': '[]',
   'console_setting.api_info_enabled': true,
   'console_setting.announcements_enabled': true,
   'console_setting.faq_enabled': true,
-  'console_setting.uptime_kuma_enabled': false,
+  'model_health_setting.enabled': false,
+  'model_health_setting.pool_details_enabled': false,
+  'model_health_setting.multi_sample_enabled': false,
+  'model_health_setting.default_interval_seconds': 300,
+  'model_health_setting.default_timeout_seconds': 45,
+  'model_health_setting.default_sampling_mode': 'confirm_on_failure',
+  'model_health_setting.default_samples_per_run': 3,
+  'model_health_setting.default_minimum_successes': 2,
+  'model_health_setting.default_sample_spacing_seconds': 3,
+  'model_health_setting.concurrency': 4,
+  'model_health_setting.retention_days': 30,
+  'model_health_setting.healthy_threshold': 99,
+  'model_health_setting.fluctuating_threshold': 95,
+  'model_health_setting.passive_min_samples': 30,
+  'model_health_setting.active_min_samples': 3,
+  'model_health_setting.public_groups': '[]',
+  'model_health_setting.public_models': '[]',
+  'perf_metrics_setting.enabled': true,
+  'perf_metrics_setting.flush_interval': 5,
+  'perf_metrics_setting.bucket_time': '5min',
+  'perf_metrics_setting.retention_days': 30,
   DataExportEnabled: false,
   DataExportDefaultTime: 'hour',
   DataExportInterval: 5,
@@ -45,43 +64,6 @@ const defaultContentSettings: ContentSettings = {
   MjActionCheckSuccessEnabled: false,
 }
 
-function resolveContentSettings(
-  settings: ContentSettings,
-  raw: SystemOption[] | undefined
-): ContentSettings {
-  if (!raw || raw.length === 0) return settings
-
-  const optionMap = new Map(raw.map((item) => [item.key, item.value]))
-  const next = { ...settings }
-
-  const legacyMap = [
-    { current: 'console_setting.announcements', legacy: 'Announcements' },
-    { current: 'console_setting.api_info', legacy: 'ApiInfo' },
-    { current: 'console_setting.faq', legacy: 'FAQ' },
-  ] as const
-
-  for (const { current, legacy } of legacyMap) {
-    if (!optionMap.has(current)) {
-      const legacyValue = optionMap.get(legacy)
-      if (legacyValue !== undefined) {
-        next[current] = legacyValue
-      }
-    }
-  }
-
-  if (!optionMap.has('console_setting.uptime_kuma_groups')) {
-    const legacyUrl = optionMap.get('UptimeKumaUrl')
-    const legacySlug = optionMap.get('UptimeKumaSlug')
-    if (legacyUrl && legacySlug) {
-      next['console_setting.uptime_kuma_groups'] = JSON.stringify([
-        { id: 1, categoryName: 'Legacy', url: legacyUrl, slug: legacySlug },
-      ])
-    }
-  }
-
-  return next
-}
-
 export function ContentSettings() {
   return (
     <SettingsPage
@@ -91,7 +73,6 @@ export function ContentSettings() {
       getSectionContent={getContentSectionContent}
       getSectionMeta={getContentSectionMeta}
       loadingMessage='Loading content settings...'
-      resolveSettings={resolveContentSettings}
     />
   )
 }

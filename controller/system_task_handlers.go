@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_health_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 )
 
@@ -22,6 +23,7 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(modelHealthHandler{})
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
@@ -150,6 +152,121 @@ func (asyncTaskPollHandler) NewPayload() any { return nil }
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+type modelHealthTaskPayload struct {
+	TargetIDs []int64 `json:"target_ids,omitempty"`
+	Force     bool    `json:"force,omitempty"`
+}
+
+type modelHealthTaskSummary struct {
+	Targets   int `json:"targets"`
+	Models    int `json:"models"`
+	Succeeded int `json:"succeeded"`
+	Failed    int `json:"failed"`
+}
+
+// modelHealthHandler scans due targets every minute. The shared system-task
+// lease serializes scheduled and manual runs across nodes; each target runs its
+// models with the globally bounded probe executor.
+type modelHealthHandler struct{}
+
+func (modelHealthHandler) Type() string { return model.SystemTaskTypeModelHealth }
+
+func (modelHealthHandler) Enabled() bool {
+	return model_health_setting.GetSetting().Enabled
+}
+
+func (modelHealthHandler) Interval() time.Duration { return time.Minute }
+
+func (modelHealthHandler) NewPayload() any { return modelHealthTaskPayload{} }
+
+func (modelHealthHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	payload := modelHealthTaskPayload{}
+	if err := task.DecodePayload(&payload); err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	targets, err := modelHealthTargetsForTask(payload)
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	report := service.NewSystemTaskProgressReporter(task, runnerID)
+	summary := modelHealthTaskSummary{Targets: len(targets)}
+	type targetResult struct {
+		result service.ModelHealthTargetRunResult
+		err    error
+	}
+	completed := make(chan targetResult, len(targets))
+	limiter := service.SharedModelHealthProbeLimiter()
+	for index := range targets {
+		target := targets[index]
+		go func() {
+			result, runErr := service.RunModelHealthTargetWithLimiter(ctx, &target, limiter)
+			completed <- targetResult{result: result, err: runErr}
+		}()
+	}
+	for processed := 0; processed < len(targets); processed++ {
+		outcome := <-completed
+		result, runErr := outcome.result, outcome.err
+		if runErr != nil {
+			summary.Failed++
+			report(processed+1, len(targets))
+			continue
+		}
+		summary.Models += len(result.Results)
+		for _, probe := range result.Results {
+			if probe.Status == model.ModelHealthProbeSuccess {
+				summary.Succeeded++
+			} else {
+				summary.Failed++
+			}
+		}
+		report(processed+1, len(targets))
+	}
+	report(len(targets), len(targets))
+	if ctx.Err() != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, ctx.Err())
+		return
+	}
+	retentionDays := model_health_setting.GetSetting().RetentionDays
+	cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).Unix()
+	if err := model.DeleteModelHealthHistoriesBefore(cutoff); err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+func modelHealthTargetsForTask(payload modelHealthTaskPayload) ([]model.ModelHealthTarget, error) {
+	if len(payload.TargetIDs) > 0 {
+		targets := make([]model.ModelHealthTarget, 0, len(payload.TargetIDs))
+		for _, id := range payload.TargetIDs {
+			target, err := model.GetModelHealthTarget(id)
+			if err != nil {
+				return nil, err
+			}
+			if target.Enabled {
+				targets = append(targets, *target)
+			}
+		}
+		return targets, nil
+	}
+	if !payload.Force {
+		return model.ListDueModelHealthTargets(common.GetTimestamp(), model.MaxModelHealthTargets)
+	}
+	targets, err := model.ListModelHealthTargets()
+	if err != nil {
+		return nil, err
+	}
+	enabled := targets[:0]
+	for _, target := range targets {
+		if target.Enabled {
+			enabled = append(enabled, target)
+		}
+	}
+	return enabled, nil
 }
 
 func finishSystemTaskHandler(task *model.SystemTask, runnerID string, status model.SystemTaskStatus, result any, runErr error) {

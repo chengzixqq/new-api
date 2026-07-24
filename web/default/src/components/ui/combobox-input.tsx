@@ -36,6 +36,7 @@ interface ComboboxInputProps {
   placeholder?: string
   emptyText?: string
   className?: string
+  listClassName?: string
   id?: string
   allowCustomValue?: boolean
   openOnFocus?: boolean
@@ -48,6 +49,7 @@ export function ComboboxInput({
   placeholder = 'Select or type...',
   emptyText = 'No option found.',
   className,
+  listClassName,
   id,
   allowCustomValue = false,
   openOnFocus = true,
@@ -203,7 +205,7 @@ export function ComboboxInput({
             <ul
               ref={listRef}
               role='listbox'
-              className='max-h-[200px] overflow-y-auto p-1'
+              className={cn('max-h-[200px] overflow-y-auto p-1', listClassName)}
             >
               {filteredOptions.map((option, index) => (
                 <li

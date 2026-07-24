@@ -36,6 +36,37 @@ func TestCalculateAudioQuota_UsePrice_OverrideModelPriceWins(t *testing.T) {
 
 // 按量计费时,四个分量价格(prompt / completion / audio_in / audio_out)全部设置,
 // 结果完全由覆盖价决定,ModelRatio / GroupRatio 即便设成 99 也被忽略。
+func TestCalculateAudioQuota_AppliesPersonalMultiplierToAbsoluteOverrides(t *testing.T) {
+	t.Run("per request price", func(t *testing.T) {
+		got, _ := calculateAudioQuota(QuotaInfo{
+			UsePrice:           true,
+			Override:           &types.ModelGroupPricing{ModelPrice: testFloat64Ptr(0.25)},
+			OverrideMultiplier: 0.8,
+		})
+
+		require.Equal(t, 100000, got)
+	})
+
+	t.Run("token component prices", func(t *testing.T) {
+		got, _ := calculateAudioQuota(QuotaInfo{
+			ModelName:          "personal-override-audio",
+			ModelRatio:         99,
+			GroupRatio:         0.8,
+			InputDetails:       TokenDetails{TextTokens: 1000, AudioTokens: 2000},
+			OutputDetails:      TokenDetails{TextTokens: 500, AudioTokens: 300},
+			OverrideMultiplier: 0.8,
+			Override: &types.ModelGroupPricing{
+				PromptPrice:          testFloat64Ptr(0.1),
+				CompletionPrice:      testFloat64Ptr(0.6),
+				AudioPrice:           testFloat64Ptr(2.0),
+				AudioCompletionPrice: testFloat64Ptr(4.0),
+			},
+		})
+
+		require.Equal(t, 2240, got)
+	})
+}
+
 func TestCalculateAudioQuota_TokenPath_AllComponentPricesOverrideRatios(t *testing.T) {
 	// 锚定折算前提:期望值按 QuotaPerUnit=500000 推导,若该常量变动需重算。
 	require.Equal(t, 500000.0, common.QuotaPerUnit, "本测试的期望额度基于 QuotaPerUnit=500000")

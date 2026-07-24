@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strconv"
@@ -10,9 +11,10 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay"
+	"github.com/QuantumNous/new-api/service"
 )
 
-func getGeminiVideoURL(channel *model.Channel, task *model.Task, apiKey string) (string, error) {
+func getGeminiVideoURL(ctx context.Context, channel *model.Channel, task *model.Task, apiKey string) (string, error) {
 	if channel == nil || task == nil {
 		return "", fmt.Errorf("invalid channel or task")
 	}
@@ -36,7 +38,8 @@ func getGeminiVideoURL(channel *model.Channel, task *model.Task, apiKey string) 
 	}
 
 	proxy := channel.GetSetting().Proxy
-	resp, err := adaptor.FetchTask(baseURL, apiKey, map[string]any{
+	ctx = service.WithChannelUpstreamHTTPPolicy(ctx, channel.Id, channel.GetOtherSettings())
+	resp, err := adaptor.FetchTask(ctx, baseURL, apiKey, map[string]any{
 		"task_id": task.GetUpstreamTaskID(),
 		"action":  task.Action,
 	}, proxy)
@@ -145,7 +148,7 @@ func extractGeminiVideoURLFromGeneratedSamples(gvr map[string]any) string {
 	return ""
 }
 
-func getVertexVideoURL(channel *model.Channel, task *model.Task) (string, error) {
+func getVertexVideoURL(ctx context.Context, channel *model.Channel, task *model.Task) (string, error) {
 	if channel == nil || task == nil {
 		return "", fmt.Errorf("invalid channel or task")
 	}
@@ -171,7 +174,8 @@ func getVertexVideoURL(channel *model.Channel, task *model.Task) (string, error)
 		return "", fmt.Errorf("vertex key not available for task")
 	}
 
-	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
+	ctx = service.WithChannelUpstreamHTTPPolicy(ctx, channel.Id, channel.GetOtherSettings())
+	resp, err := adaptor.FetchTask(ctx, baseURL, key, map[string]any{
 		"task_id": task.GetUpstreamTaskID(),
 		"action":  task.Action,
 	}, channel.GetSetting().Proxy)

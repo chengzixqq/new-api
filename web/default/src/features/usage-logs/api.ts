@@ -18,7 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
 
-import { buildQueryParams } from './lib/utils'
+import {
+  buildUsageLogApiPath,
+  buildUsageLogQueryParams,
+} from './lib/query-state'
 import type {
   GetLogsParams,
   GetLogsResponse,
@@ -33,22 +36,18 @@ import type {
 // Generic API Helpers
 // ============================================================================
 
-function buildApiPath(endpoint: string, isAdmin: boolean): string {
-  return isAdmin ? endpoint : `${endpoint}/self`
-}
-
 async function fetchLogs<T>(
   endpoint: string,
   params: T,
   isAdmin: boolean
 ): Promise<GetLogsResponse> {
   const paramRecord = params as unknown as Record<string, unknown>
-  const queryParams = buildQueryParams({
+  const queryParams = buildUsageLogQueryParams({
     p: paramRecord.p || 1,
     page_size: paramRecord.page_size || 20,
     ...params,
   })
-  const path = buildApiPath(endpoint, isAdmin)
+  const path = buildUsageLogApiPath(endpoint, isAdmin, 'list')
   const res = await api.get(`${path}?${queryParams}`)
   return res.data
 }
@@ -58,11 +57,11 @@ async function fetchLogStats<T>(
   params: T,
   isAdmin: boolean
 ): Promise<GetLogStatsResponse> {
-  const queryParams = buildQueryParams(
+  const queryParams = buildUsageLogQueryParams(
     params as unknown as Record<string, unknown>
   )
-  const path = buildApiPath(endpoint, isAdmin)
-  const res = await api.get(`${path}/stat?${queryParams}`)
+  const path = buildUsageLogApiPath(endpoint, isAdmin, 'stat')
+  const res = await api.get(`${path}?${queryParams}`)
   return res.data
 }
 

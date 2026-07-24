@@ -4,11 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
@@ -30,14 +28,15 @@ type TokenDetails struct {
 }
 
 type QuotaInfo struct {
-	InputDetails  TokenDetails
-	OutputDetails TokenDetails
-	ModelName     string
-	UsePrice      bool
-	ModelPrice    float64
-	ModelRatio    float64
-	GroupRatio    float64
-	Override      *types.ModelGroupPricing
+	InputDetails       TokenDetails
+	OutputDetails      TokenDetails
+	ModelName          string
+	UsePrice           bool
+	ModelPrice         float64
+	ModelRatio         float64
+	GroupRatio         float64
+	Override           *types.ModelGroupPricing
+	OverrideMultiplier float64
 }
 
 func audioChargeableTokenCount(inputTokens int, outputTokens int, info QuotaInfo) int {
@@ -60,11 +59,16 @@ func hasCustomModelRatio(modelName string, currentRatio float64) bool {
 }
 
 func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
+	overrideMultiplier := decimal.NewFromInt(1)
+	if info.OverrideMultiplier > 0 && !math.IsNaN(info.OverrideMultiplier) && !math.IsInf(info.OverrideMultiplier, 0) {
+		overrideMultiplier = decimal.NewFromFloat(info.OverrideMultiplier)
+	}
+
 	if info.UsePrice {
 		if info.Override != nil && info.Override.ModelPrice != nil {
 			modelPrice := decimal.NewFromFloat(*info.Override.ModelPrice)
 			quotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
-			quota := modelPrice.Mul(quotaPerUnit)
+			quota := modelPrice.Mul(quotaPerUnit).Mul(overrideMultiplier)
 			if quota.IsZero() && *info.Override.ModelPrice > 0 {
 				return 1, nil
 			}
@@ -95,7 +99,7 @@ func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 	if info.Override != nil && info.Override.HasPriceOverride() {
 		addOverrideOrRatio := func(price *float64, tokens decimal.Decimal, ratioMultiplier decimal.Decimal) {
 			if price != nil {
-				quota = quota.Add(decimal.NewFromFloat(*price).Div(decimal.NewFromInt(1_000_000)).Mul(tokens).Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
+				quota = quota.Add(decimal.NewFromFloat(*price).Div(decimal.NewFromInt(1_000_000)).Mul(tokens).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).Mul(overrideMultiplier))
 				return
 			}
 			quota = quota.Add(tokens.Mul(ratioMultiplier).Mul(modelRatio).Mul(groupRatio))
@@ -129,39 +133,17 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	if relayInfo.UsePrice {
 		return nil
 	}
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
-	if err != nil {
-		return err
-	}
-
-	token, err := model.GetTokenByKey(strings.TrimPrefix(relayInfo.TokenKey, "sk-"), false)
-	if err != nil {
-		return err
-	}
 
 	modelName := relayInfo.OriginModelName
 	textInputTokens := usage.InputTokenDetails.TextTokens
 	textOutTokens := usage.OutputTokenDetails.TextTokens
 	audioInputTokens := usage.InputTokenDetails.AudioTokens
 	audioOutTokens := usage.OutputTokenDetails.AudioTokens
-	groupRatio := ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 	modelRatio, _, _ := ratio_setting.GetModelRatio(modelName)
-
-	autoGroup, exists := common.GetContextKey(ctx, constant.ContextKeyAutoGroup)
-	if exists {
-		groupRatio = ratio_setting.GetGroupRatio(autoGroup.(string))
-		logger.LogDebug(ctx, "final group ratio: %f", groupRatio)
-		relayInfo.UsingGroup = autoGroup.(string)
-	}
-
-	actualGroupRatio := groupRatio
-	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
-	if ok {
-		actualGroupRatio = userGroupRatio
-	}
-	if modelGroupRatio, ok := model.GetModelGroupRatio(modelName, relayInfo.UsingGroup); ok {
-		actualGroupRatio = modelGroupRatio
-	}
+	// ModelPriceHelper/HandleGroupRatio already resolved base, membership-group,
+	// per-user, model-group, and auto-group precedence. Reuse the frozen result
+	// instead of bypassing per-user overrides with a second global lookup.
+	actualGroupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
 
 	quotaInfo := QuotaInfo{
 		InputDetails: TokenDetails{
@@ -172,25 +154,18 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 			TextTokens:  textOutTokens,
 			AudioTokens: audioOutTokens,
 		},
-		ModelName:  modelName,
-		UsePrice:   relayInfo.UsePrice,
-		ModelRatio: modelRatio,
-		GroupRatio: actualGroupRatio,
-		Override:   relayInfo.PriceData.GroupPriceOverride,
+		ModelName:          modelName,
+		UsePrice:           relayInfo.UsePrice,
+		ModelRatio:         modelRatio,
+		GroupRatio:         actualGroupRatio,
+		Override:           relayInfo.PriceData.GroupPriceOverride,
+		OverrideMultiplier: relayInfo.PriceData.PersonalGroupPriceMultiplier(),
 	}
 
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)
 
-	if userQuota < quota {
-		return fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(userQuota), logger.FormatQuota(quota))
-	}
-
-	if !token.UnlimitedQuota && token.RemainQuota < quota {
-		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))
-	}
-
-	err = PostConsumeQuota(relayInfo, quota, 0, false)
+	err := PostConsumeQuota(relayInfo, quota, 0, false)
 	if err != nil {
 		return err
 	}
@@ -237,11 +212,12 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 			TextTokens:  textOutTokens,
 			AudioTokens: audioOutTokens,
 		},
-		ModelName:  modelName,
-		UsePrice:   usePrice,
-		ModelRatio: modelRatio,
-		GroupRatio: groupRatio,
-		Override:   relayInfo.PriceData.GroupPriceOverride,
+		ModelName:          modelName,
+		UsePrice:           usePrice,
+		ModelRatio:         modelRatio,
+		GroupRatio:         groupRatio,
+		Override:           relayInfo.PriceData.GroupPriceOverride,
+		OverrideMultiplier: relayInfo.PriceData.PersonalGroupPriceMultiplier(),
 	}
 
 	quota, clamp := calculateAudioQuota(quotaInfo)
@@ -324,6 +300,10 @@ func CalcOpenRouterCacheCreateTokens(usage dto.Usage, priceData types.PriceData)
 }
 
 func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent string) {
+	if relayInfo != nil && relayInfo.SSELimitExceededBeforeOutput() {
+		return
+	}
+	usage = conservativeInterruptedStreamUsage(ctx, relayInfo, usage)
 
 	var tieredUsedVars map[string]bool
 	if snap := relayInfo.TieredBillingSnapshot; snap != nil {
@@ -361,11 +341,12 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 			TextTokens:  textOutTokens,
 			AudioTokens: audioOutTokens,
 		},
-		ModelName:  relayInfo.OriginModelName,
-		UsePrice:   usePrice,
-		ModelRatio: modelRatio,
-		GroupRatio: groupRatio,
-		Override:   relayInfo.PriceData.GroupPriceOverride,
+		ModelName:          relayInfo.OriginModelName,
+		UsePrice:           usePrice,
+		ModelRatio:         modelRatio,
+		GroupRatio:         groupRatio,
+		Override:           relayInfo.PriceData.GroupPriceOverride,
+		OverrideMultiplier: relayInfo.PriceData.PersonalGroupPriceMultiplier(),
 	}
 
 	quota, clamp := calculateAudioQuota(quotaInfo)
@@ -436,47 +417,48 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 	if relayInfo.IsPlayground {
 		return nil
 	}
-	//if relayInfo.TokenUnlimited {
-	//	return nil
-	//}
-	token, err := model.GetTokenByKey(relayInfo.TokenKey, false)
-	if err != nil {
-		return err
-	}
-	if !relayInfo.TokenUnlimited && token.RemainQuota < quota {
-		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))
-	}
-	err = model.DecreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota)
-	if err != nil {
-		return err
-	}
-	return nil
+	// The conditional database update is the authorization boundary. A cached
+	// read followed by an unconditional decrement lets concurrent requests spend
+	// the same balance and can also reject a recently topped-up token from stale
+	// cache data.
+	return model.DecreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota)
 }
 
 func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) (err error) {
 
-	// 1) Consume from wallet quota OR subscription item
-	if relayInfo != nil && relayInfo.BillingSource == BillingSourceSubscription {
-		if relayInfo.SubscriptionId == 0 {
-			return errors.New("subscription id is missing")
+	// Wallet and token quota are one financial unit: commit both sides or
+	// neither. This also covers legacy/direct billing paths that do not create a
+	// BillingSession.
+	if relayInfo == nil || relayInfo.BillingSource != BillingSourceSubscription {
+		if relayInfo == nil {
+			return errors.New("relay info is missing")
 		}
-		delta := int64(quota)
-		if delta != 0 {
-			if err := model.PostConsumeUserSubscriptionDelta(relayInfo.SubscriptionId, delta); err != nil {
-				return err
-			}
-			relayInfo.SubscriptionPostDelta += delta
-		}
-	} else {
-		// Wallet
-		if quota > 0 {
-			err = model.DecreaseUserQuota(relayInfo.UserId, quota, false)
-		} else {
-			err = model.IncreaseUserQuota(relayInfo.UserId, -quota, false)
-		}
-		if err != nil {
+		if err := model.AdjustWalletAndTokenQuota(
+			relayInfo.UserId,
+			relayInfo.TokenId,
+			relayInfo.TokenKey,
+			quota,
+			relayInfo.IsPlayground,
+		); err != nil {
 			return err
 		}
+		if sendEmail && (quota+preConsumedQuota) != 0 {
+			checkAndSendQuotaNotify(relayInfo, quota, preConsumedQuota)
+		}
+		return nil
+	}
+
+	// Subscription consumption is already transactionally protected by the
+	// subscription ledger; its token accounting remains a separate adjustment.
+	if relayInfo.SubscriptionId == 0 {
+		return errors.New("subscription id is missing")
+	}
+	delta := int64(quota)
+	if delta != 0 {
+		if err := model.PostConsumeUserSubscriptionDelta(relayInfo.SubscriptionId, delta); err != nil {
+			return err
+		}
+		relayInfo.SubscriptionPostDelta += delta
 	}
 
 	if !relayInfo.IsPlayground {

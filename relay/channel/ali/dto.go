@@ -110,7 +110,7 @@ func (o *AliOutput) ChoicesToOpenAIImageDate(c *gin.Context, responseFormat stri
 					if strings.HasPrefix(content.Image, "http") {
 						var b64Json string
 						if responseFormat == "b64_json" {
-							_, b64, err := service.GetImageFromUrl(content.Image)
+							_, b64, err := service.GetImageFromUrlWithContext(c.Request.Context(), content.Image)
 							if err != nil {
 								logger.LogError(c, "get_image_data_failed: "+err.Error())
 								continue
@@ -138,7 +138,7 @@ func (o *AliOutput) ResultToOpenAIImageDate(c *gin.Context, responseFormat strin
 	for _, data := range o.Results {
 		var b64Json string
 		if responseFormat == "b64_json" {
-			_, b64, err := service.GetImageFromUrl(data.Url)
+			_, b64, err := service.GetImageFromUrlWithContext(c.Request.Context(), data.Url)
 			if err != nil {
 				logger.LogError(c, "get_image_data_failed: "+err.Error())
 				continue

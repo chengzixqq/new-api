@@ -3,6 +3,8 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -43,9 +45,16 @@ const (
 
 var (
 	ErrPaymentMethodMismatch = errors.New("payment method mismatch")
+	ErrPaymentAmountMismatch = errors.New("payment amount mismatch")
 	ErrTopUpNotFound         = errors.New("topup not found")
 	ErrTopUpStatusInvalid    = errors.New("topup status invalid")
 )
+
+type EpayTopUpCompletion struct {
+	TopUp            TopUp
+	QuotaAdded       int
+	AlreadyCompleted bool
+}
 
 func (topUp *TopUp) Insert() error {
 	var err error
@@ -77,6 +86,94 @@ func GetTopUpByTradeNo(tradeNo string) *TopUp {
 		return nil
 	}
 	return topUp
+}
+
+// CompleteEpayTopUp verifies the signed callback facts against the persisted
+// order and atomically commits both the successful order state and wallet
+// credit. Replaying the same callback is idempotent; a callback whose provider,
+// payment method, or amount differs from the stored order is always rejected.
+func CompleteEpayTopUp(tradeNo string, paymentMethod string, paidMoney string) (*EpayTopUpCompletion, error) {
+	tradeNo = strings.TrimSpace(tradeNo)
+	paymentMethod = strings.TrimSpace(paymentMethod)
+	paidMoney = strings.TrimSpace(paidMoney)
+	if tradeNo == "" || paymentMethod == "" || paidMoney == "" {
+		return nil, errors.New("missing epay callback fields")
+	}
+
+	callbackMoney, err := decimal.NewFromString(paidMoney)
+	if err != nil || callbackMoney.LessThanOrEqual(decimal.Zero) {
+		return nil, ErrPaymentAmountMismatch
+	}
+
+	completion := &EpayTopUpCompletion{}
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		topUp := TopUp{}
+		if err := lockForUpdate(tx).Where("trade_no = ?", tradeNo).First(&topUp).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrTopUpNotFound
+			}
+			return err
+		}
+
+		if topUp.PaymentProvider != PaymentProviderEpay || topUp.PaymentMethod != paymentMethod {
+			return ErrPaymentMethodMismatch
+		}
+
+		// RequestEpay sends this exact two-decimal representation to Epay.
+		// Reconstruct it from the persisted value so callbacks for legacy pending
+		// orders are checked against the amount the provider was instructed to
+		// collect, including float values that sit on a rounding boundary.
+		expectedMoney, parseErr := decimal.NewFromString(strconv.FormatFloat(topUp.Money, 'f', 2, 64))
+		if parseErr != nil || !callbackMoney.Equal(expectedMoney) {
+			return ErrPaymentAmountMismatch
+		}
+
+		dAmount := decimal.NewFromInt(topUp.Amount)
+		dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
+		quotaToAdd, clamp := common.QuotaFromDecimalChecked(dAmount.Mul(dQuotaPerUnit).Truncate(0))
+		if clamp != nil || quotaToAdd <= 0 {
+			return ErrPaymentAmountMismatch
+		}
+
+		completion.TopUp = topUp
+		completion.QuotaAdded = quotaToAdd
+		if topUp.Status == common.TopUpStatusSuccess {
+			completion.AlreadyCompleted = true
+			return nil
+		}
+		if topUp.Status != common.TopUpStatusPending {
+			return ErrTopUpStatusInvalid
+		}
+
+		completeTime := common.GetTimestamp()
+		result := tx.Model(&TopUp{}).
+			Where("id = ? AND status = ?", topUp.Id, common.TopUpStatusPending).
+			Updates(map[string]interface{}{
+				"status":        common.TopUpStatusSuccess,
+				"complete_time": completeTime,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrTopUpStatusInvalid
+		}
+		if err := IncreaseUserQuotaTx(tx, topUp.UserId, quotaToAdd); err != nil {
+			return err
+		}
+
+		completion.TopUp.Status = common.TopUpStatusSuccess
+		completion.TopUp.CompleteTime = completeTime
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if !completion.AlreadyCompleted {
+		invalidateBillingQuotaCaches(completion.TopUp.UserId, "")
+	}
+	return completion, nil
 }
 
 func UpdatePendingTopUpStatus(tradeNo string, expectedPaymentProvider string, targetStatus string) error {

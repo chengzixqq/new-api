@@ -86,6 +86,7 @@ export interface ChannelSettings {
   pass_through_body_enabled?: boolean
   system_prompt?: string
   system_prompt_override?: boolean
+  sse_max_event_size_mb?: number
 }
 
 export interface ChannelOtherSettings {
@@ -101,16 +102,39 @@ export interface ChannelOtherSettings {
   allow_speed?: boolean
   claude_beta_query?: boolean
   disable_task_polling_sleep?: boolean
+  task_polling_concurrency?: number
+  task_polling_interval_ms?: number
   cowork_adaptive_thinking_fix?: boolean
   upstream_warmup_enabled?: boolean
   upstream_trace_enabled?: boolean
   force_http1?: boolean
+  upstream_http_mode?: 'auto' | 'http1' | 'hybrid'
+  http2_connection_pool_size?: number
+  http1_body_threshold_kib?: number
   upstream_model_update_check_enabled?: boolean
   upstream_model_update_auto_sync_enabled?: boolean
   upstream_model_update_ignored_models?: string[]
   upstream_model_update_last_check_time?: number
   upstream_model_update_last_detected_models?: string[]
   advanced_custom?: AdvancedCustomConfig
+}
+
+export type UpstreamHTTPMode = 'auto' | 'http1' | 'hybrid'
+
+export type EffectiveUpstreamHTTPConfig = {
+  sse_max_event_size_mb?: number
+  upstream_http_mode: UpstreamHTTPMode
+  http2_connection_pool_size: number
+  http1_body_threshold_kib: number
+  upstream_http_mode_source?: string
+  http2_connection_pool_size_source?: string
+  http1_body_threshold_kib_source?: string
+}
+
+export type EffectiveUpstreamHTTPConfigResponse = {
+  success: boolean
+  message?: string
+  data?: EffectiveUpstreamHTTPConfig
 }
 
 export interface AdvancedCustomConfig {

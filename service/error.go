@@ -17,6 +17,8 @@ import (
 	"github.com/QuantumNous/new-api/types"
 )
 
+const maxUpstreamErrorBodyBytes int64 = 1 << 20
+
 func MidjourneyErrorWrapper(code int, desc string) *dto.MidjourneyResponse {
 	return &dto.MidjourneyResponse{
 		Code:        code,
@@ -85,12 +87,20 @@ func ClaudeErrorWrapperLocal(err error, code string, statusCode int) *dto.Claude
 
 func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFail bool) (newApiErr *types.NewAPIError) {
 	newApiErr = types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
+	defer CloseResponseBodyGracefully(resp)
+	if common.IsModelHealthProbeContext(ctx) {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
+		newApiErr.Err = fmt.Errorf("health probe upstream returned status code %d", resp.StatusCode)
+		return
+	}
 
-	responseBody, err := io.ReadAll(resp.Body)
+	// Error bodies are controlled by the upstream. Keep the diagnostic payload
+	// bounded so a broken or hostile provider cannot turn one failed request into
+	// an unbounded allocation on the gateway.
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 	if err != nil {
 		return
 	}
-	CloseResponseBodyGracefully(resp)
 	var errResponse dto.GeneralErrorResponse
 	responseBodyText := string(responseBody)
 	responseBodyPreview := common.LocalLogPreview(responseBodyText)

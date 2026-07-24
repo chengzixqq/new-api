@@ -2,6 +2,7 @@ package aws
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,9 +14,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDoAwsClientRequest_AppliesRuntimeHeaderOverrideToAnthropicBeta(t *testing.T) {
-	t.Parallel()
+func TestNewAwsInvokeContextInheritsDownstreamCancellation(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	ginContext.Request = httptest.NewRequestWithContext(requestContext, http.MethodPost, "/v1/messages", nil)
 
+	invokeContext, cancelInvoke := newAwsInvokeContext(ginContext)
+	defer cancelInvoke()
+	cancelRequest()
+
+	require.ErrorIs(t, invokeContext.Err(), context.Canceled)
+}
+
+func TestNewAwsClientDisablesSDKRequestReplay(t *testing.T) {
+	client, err := newAwsClient(nil, &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiKey: "access-key|secret-key|us-east-1",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, client.Options().RetryMaxAttempts)
+}
+
+func TestDoAwsClientRequest_AppliesRuntimeHeaderOverrideToAnthropicBeta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)

@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel/openrouter"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/relayconvert"
@@ -101,6 +102,101 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	return helper.ObjectData(c, lastStreamResponse)
 }
 
+type openAIStreamFrame struct {
+	data         string
+	terminal     bool
+	streamUsage  *dto.Usage
+	hasPayload   bool
+	omitTerminal bool
+}
+
+// classifyOpenAIStreamFrame identifies frames whose downstream representation
+// depends on end-of-stream state. Content, reasoning, tool-call, and ordinary
+// metadata frames can be forwarded immediately; pure usage and finish frames
+// are kept until the tail is known so include_usage and format conversion keep
+// their existing semantics.
+func classifyOpenAIStreamFrame(relayMode int, data string) openAIStreamFrame {
+	frame := openAIStreamFrame{data: data}
+
+	switch relayMode {
+	case relayconstant.RelayModeChatCompletions:
+		var response dto.ChatCompletionsStreamResponse
+		if err := common.UnmarshalJsonStr(data, &response); err != nil {
+			return frame
+		}
+		frame.streamUsage = response.Usage
+		for _, choice := range response.Choices {
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				frame.terminal = true
+			}
+			if choice.Delta.GetContentString() != "" ||
+				choice.Delta.GetReasoningContent() != "" ||
+				len(choice.Delta.ToolCalls) > 0 {
+				frame.hasPayload = true
+			}
+		}
+	case relayconstant.RelayModeCompletions:
+		var response dto.CompletionsStreamResponse
+		if err := common.UnmarshalJsonStr(data, &response); err != nil {
+			return frame
+		}
+		for _, choice := range response.Choices {
+			if choice.FinishReason != "" {
+				frame.terminal = true
+			}
+			if choice.Text != "" {
+				frame.hasPayload = true
+			}
+		}
+	}
+
+	return frame
+}
+
+func shouldDeferOpenAIStreamFrame(frame openAIStreamFrame) bool {
+	return !frame.hasPayload && (frame.streamUsage != nil || frame.terminal)
+}
+
+func sendOpenAIStreamFrame(c *gin.Context, info *relaycommon.RelayInfo, frame openAIStreamFrame) error {
+	data := frame.data
+	if (frame.streamUsage != nil && !info.ShouldIncludeUsage) || frame.omitTerminal {
+		var payload map[string]any
+		if err := common.UnmarshalJsonStr(data, &payload); err != nil {
+			return err
+		}
+		if frame.streamUsage != nil && !info.ShouldIncludeUsage {
+			delete(payload, "usage")
+		}
+		if frame.omitTerminal {
+			if choices, ok := payload["choices"].([]any); ok {
+				for _, rawChoice := range choices {
+					if choice, ok := rawChoice.(map[string]any); ok {
+						delete(choice, "finish_reason")
+					}
+				}
+			}
+		}
+		filtered, err := common.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		data = string(filtered)
+	}
+	return HandleStreamFormat(c, info, data, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+}
+
+func sendDeferredOpenAIStreamFrames(c *gin.Context, info *relaycommon.RelayInfo, frames []openAIStreamFrame) error {
+	for _, frame := range frames {
+		if frame.streamUsage != nil && !frame.terminal && !info.ShouldIncludeUsage {
+			continue
+		}
+		if err := sendOpenAIStreamFrame(c, info, frame); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		logger.LogError(c, "invalid response or response body")
@@ -118,18 +214,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var toolCount int
 	var usage = &dto.Usage{}
 	var lastStreamData string
+	deferredFrames := make([]openAIStreamFrame, 0, 2)
+	terminalSeen := false
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
 
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
-		if lastStreamData != "" {
-			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-				common.SysLog("error handling stream format: " + err.Error())
-				sr.Error(err)
-			}
-		}
 		if len(data) > 0 {
 			// 对音频模型，保存倒数第二个stream data
 			if isAudioModel && lastStreamData != "" {
@@ -139,6 +231,38 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			lastStreamData = data
 			if err := processTokenData(info.RelayMode, data, &responseTextBuilder, &toolCount); err != nil {
 				logger.LogError(c, "error processing stream token data: "+err.Error())
+				sr.Error(err)
+			}
+
+			frame := classifyOpenAIStreamFrame(info.RelayMode, data)
+			if service.ValidUsage(frame.streamUsage) {
+				usage = frame.streamUsage
+				containStreamUsage = true
+			}
+			if frame.terminal {
+				if terminalSeen {
+					if !frame.hasPayload {
+						return
+					}
+					frame.omitTerminal = true
+				} else {
+					terminalSeen = true
+				}
+			}
+			if shouldDeferOpenAIStreamFrame(frame) {
+				deferredFrames = append(deferredFrames, frame)
+				return
+			}
+			if len(deferredFrames) > 0 {
+				if err := sendDeferredOpenAIStreamFrames(c, info, deferredFrames); err != nil {
+					common.SysLog("error handling deferred stream format: " + err.Error())
+					sr.Error(err)
+				}
+				deferredFrames = deferredFrames[:0]
+			}
+
+			if err := sendOpenAIStreamFrame(c, info, frame); err != nil {
+				common.SysLog("error handling stream format: " + err.Error())
 				sr.Error(err)
 			}
 		}
@@ -163,15 +287,31 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	// 处理最后的响应
-	shouldSendLastResp := true
-	if err := handleLastResponse(lastStreamData, &responseId, &createAt, &systemFingerprint, &model, &usage,
-		&containStreamUsage, info, &shouldSendLastResp); err != nil {
-		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
+	// Forward deferred tail frames in arrival order, leaving the final frame
+	// for the format-aware finalizer. Pure usage frames stay hidden unless the
+	// client requested include_usage.
+	if len(deferredFrames) > 1 {
+		if err := sendDeferredOpenAIStreamFrames(c, info, deferredFrames[:len(deferredFrames)-1]); err != nil {
+			common.SysLog("error handling deferred stream format: " + err.Error())
+		}
 	}
 
-	if info.RelayFormat == types.RelayFormatOpenAI {
+	finalStreamData := lastStreamData
+	shouldFinalizeLastFrame := false
+	if len(deferredFrames) > 0 {
+		finalStreamData = deferredFrames[len(deferredFrames)-1].data
+		shouldFinalizeLastFrame = true
+	}
+
+	shouldSendLastResp := true
+	if err := handleLastResponse(finalStreamData, &responseId, &createAt, &systemFingerprint, &model, &usage,
+		&containStreamUsage, info, &shouldSendLastResp); err != nil {
+		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), finalStreamData))
+	}
+
+	if shouldFinalizeLastFrame && info.RelayFormat == types.RelayFormatOpenAI {
 		if shouldSendLastResp {
-			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			_ = sendOpenAIStreamFrame(c, info, deferredFrames[len(deferredFrames)-1])
 		}
 	}
 
@@ -180,9 +320,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		usage.CompletionTokens += toolCount * 7
 	}
 
-	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
+	applyUsagePostProcessing(info, usage, common.StringToByteSlice(finalStreamData))
 
-	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	handleFinalResponse(c, info, finalStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage, shouldFinalizeLastFrame)
 
 	return usage, nil
 }

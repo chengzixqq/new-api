@@ -20,6 +20,10 @@ import { ChannelAffinitySection } from '../general/channel-affinity'
 import { IoNetDeploymentSettingsSection } from '../integrations/ionet-deployment-settings-section'
 import type { ModelSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import {
+  MODELS_DEFAULT_SECTION,
+  type MODELS_SECTION_IDS,
+} from '../section-route-config'
 import { ClaudeSettingsCard } from './claude-settings-card'
 import { GeminiSettingsCard } from './gemini-settings-card'
 import { GlobalSettingsCard } from './global-settings-card'
@@ -181,17 +185,19 @@ const MODELS_SECTIONS = [
   },
 ] as const
 
-export type ModelSectionId = (typeof MODELS_SECTIONS)[number]['id']
+export type ModelSectionId = (typeof MODELS_SECTION_IDS)[number]
 
 const modelsRegistry = createSectionRegistry<ModelSectionId, ModelSettings>({
   sections: MODELS_SECTIONS,
-  defaultSection: 'global',
+  defaultSection: MODELS_DEFAULT_SECTION,
   basePath: '/system-settings/models',
   urlStyle: 'path',
 })
 
-export const MODELS_SECTION_IDS = modelsRegistry.sectionIds
-export const MODELS_DEFAULT_SECTION = modelsRegistry.defaultSection
 export const getModelsSectionNavItems = modelsRegistry.getSectionNavItems
 export const getModelsSectionContent = modelsRegistry.getSectionContent
 export const getModelsSectionMeta = modelsRegistry.getSectionMeta
+export {
+  MODELS_DEFAULT_SECTION,
+  MODELS_SECTION_IDS,
+} from '../section-route-config'

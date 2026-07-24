@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Pencil } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
@@ -89,7 +89,8 @@ import {
   transformFormDataToPayload,
   transformUserToFormDefaults,
 } from '../lib'
-import { type User } from '../types'
+import type { User } from '../types'
+import { UserGroupRatioOverrides } from './user-group-ratio-overrides'
 import { UserQuotaDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
 
@@ -107,8 +108,10 @@ export function UsersMutateDrawer({
   const { t } = useTranslation()
   const isUpdate = !!currentRow
   const { triggerRefresh } = useUsers()
+  const queryClient = useQueryClient()
   const currentUser = useAuthStore((s) => s.auth.user)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isDetailReady, setIsDetailReady] = useState(!isUpdate)
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
 
   // Fetch groups
@@ -134,18 +137,35 @@ export function UsersMutateDrawer({
 
   // Load existing data when updating
   useEffect(() => {
-    if (open && isUpdate && currentRow) {
+    let cancelled = false
+    if (!open) {
+      setIsDetailReady(!isUpdate)
+    } else if (isUpdate && currentRow) {
+      setIsDetailReady(false)
       // For update, fetch fresh data
-      getUser(currentRow.id).then((result) => {
-        if (result.success && result.data) {
-          form.reset(transformUserToFormDefaults(result.data))
-        }
-      })
-    } else if (open && !isUpdate) {
+      getUser(currentRow.id)
+        .then((result) => {
+          if (cancelled) return
+          if (result.success && result.data) {
+            form.reset(transformUserToFormDefaults(result.data))
+            setIsDetailReady(true)
+            return
+          }
+          toast.error(result.message || t(ERROR_MESSAGES.UNEXPECTED))
+        })
+        .catch(() => {
+          if (cancelled) return
+          toast.error(t(ERROR_MESSAGES.UNEXPECTED))
+        })
+    } else if (!isUpdate) {
       // For create, reset to defaults
       form.reset(USER_FORM_DEFAULT_VALUES)
+      setIsDetailReady(true)
     }
-  }, [open, isUpdate, currentRow, form])
+    return () => {
+      cancelled = true
+    }
+  }, [open, isUpdate, currentRow, form, t])
 
   const { meta: currencyMeta } = getCurrencyDisplay()
   const currencyLabel = getCurrencyLabel()
@@ -157,6 +177,7 @@ export function UsersMutateDrawer({
   const targetIsAdmin = (selectedRole ?? currentRow?.role ?? 0) >= ROLE.ADMIN
 
   const onSubmit = async (data: UserFormValues) => {
+    if (isUpdate && !isDetailReady) return
     if (!isUpdate) {
       const passwordLength = data.password?.length || 0
       if (passwordLength < 8 || passwordLength > 20) {
@@ -180,6 +201,13 @@ export function UsersMutateDrawer({
         : await createUser(payload)
 
       if (result.success) {
+        if (isUpdate && currentRow?.id === currentUser?.id) {
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ['pricing'] }),
+            queryClient.invalidateQueries({ queryKey: ['user-groups'] }),
+            queryClient.invalidateQueries({ queryKey: ['playground-groups'] }),
+          ])
+        }
         toast.success(
           isUpdate
             ? t(SUCCESS_MESSAGES.USER_UPDATED)
@@ -195,7 +223,7 @@ export function UsersMutateDrawer({
               : t(ERROR_MESSAGES.CREATE_FAILED))
         )
       }
-    } catch (_error) {
+    } catch {
       toast.error(t(ERROR_MESSAGES.UNEXPECTED))
     } finally {
       setIsSubmitting(false)
@@ -278,7 +306,8 @@ export function UsersMutateDrawer({
                             { value: '10', label: t('Admin') },
                           ]}
                           onValueChange={(value) =>
-                            value !== null && field.onChange(parseInt(value))
+                            value !== null &&
+                            field.onChange(Number.parseInt(value))
                           }
                           value={String(field.value)}
                         >
@@ -360,12 +389,10 @@ export function UsersMutateDrawer({
                       <FormItem>
                         <FormLabel>{t('Group')}</FormLabel>
                         <Select
-                          items={[
-                            ...groups.map((group) => ({
-                              value: group,
-                              label: group,
-                            })),
-                          ]}
+                          items={groups.map((group) => ({
+                            value: group,
+                            label: group,
+                          }))}
                           onValueChange={field.onChange}
                           value={field.value}
                         >
@@ -427,6 +454,24 @@ export function UsersMutateDrawer({
                       </FormItem>
                     )}
                   />
+
+                  {isUpdate && (
+                    <FormField
+                      control={form.control}
+                      name='group_ratio_overrides'
+                      render={({ field }) => (
+                        <FormItem>
+                          <UserGroupRatioOverrides
+                            value={field.value ?? {}}
+                            groups={groups}
+                            groupsLoaded={groupsData !== undefined}
+                            onChange={field.onChange}
+                          />
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
 
                   <FormField
                     control={form.control}
@@ -577,7 +622,11 @@ export function UsersMutateDrawer({
             <SheetClose render={<Button variant='outline' />}>
               {t('Close')}
             </SheetClose>
-            <Button form='user-form' type='submit' disabled={isSubmitting}>
+            <Button
+              form='user-form'
+              type='submit'
+              disabled={isSubmitting || (isUpdate && !isDetailReady)}
+            >
               {isSubmitting ? t('Saving...') : t('Save changes')}
             </Button>
           </SheetFooter>

@@ -2,12 +2,13 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -18,20 +19,30 @@ type ssrfResolver interface {
 	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
+type protectedFetchPinnedTarget struct {
+	host string
+	port string
+	ips  []net.IP
+}
+
+type protectedFetchTargetContextKey struct{}
+
 type protectedFetchDialer struct {
 	resolver      ssrfResolver
 	dialContext   func(ctx context.Context, network, address string) (net.Conn, error)
 	getProtection func() (*common.SSRFProtection, bool, error)
 }
 
+// ssrfProtectedRoundTripper resolves each request target exactly once, validates
+// every returned address, and passes the validated addresses to the dialer via
+// the request context. It intentionally never consults environment proxy
+// settings: user-controlled downloads must connect directly to the verified IP.
 type ssrfProtectedRoundTripper struct {
-	resolver      ssrfResolver
-	dialContext   func(ctx context.Context, network, address string) (net.Conn, error)
-	getProtection func() (*common.SSRFProtection, bool, error)
-	proxy         func(*http.Request) (*url.URL, error)
-
-	mutex      sync.Mutex
-	transports map[string]*http.Transport
+	resolver              ssrfResolver
+	dialContext           func(ctx context.Context, network, address string) (net.Conn, error)
+	getProtection         func() (*common.SSRFProtection, bool, error)
+	responseHeaderTimeout time.Duration
+	tlsConfig             *tls.Config
 }
 
 func currentFetchProtection() (*common.SSRFProtection, bool, error) {
@@ -59,11 +70,15 @@ func newProtectedFetchHTTPClient() *http.Client {
 	return newProtectedFetchHTTPClientWithDialer(nil, nil, nil)
 }
 
-func newProtectedFetchHTTPClientWithDialer(resolver ssrfResolver, dialContext func(ctx context.Context, network, address string) (net.Conn, error), getProtection func() (*common.SSRFProtection, bool, error)) *http.Client {
-	return newProtectedFetchHTTPClientWithProxy(resolver, dialContext, getProtection, http.ProxyFromEnvironment)
+// NewSSRFProtectedHTTPClient returns a direct-only client that resolves and
+// validates every request and redirect target before dialing its pinned IP.
+// Callers that need an independently scoped client can use this constructor;
+// shared download paths should continue using GetSSRFProtectedHTTPClient.
+func NewSSRFProtectedHTTPClient() *http.Client {
+	return newProtectedFetchHTTPClient()
 }
 
-func newProtectedFetchHTTPClientWithProxy(resolver ssrfResolver, dialContext func(ctx context.Context, network, address string) (net.Conn, error), getProtection func() (*common.SSRFProtection, bool, error), proxy func(*http.Request) (*url.URL, error)) *http.Client {
+func newProtectedFetchHTTPClientWithDialer(resolver ssrfResolver, dialContext func(ctx context.Context, network, address string) (net.Conn, error), getProtection func() (*common.SSRFProtection, bool, error)) *http.Client {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
@@ -77,154 +92,173 @@ func newProtectedFetchHTTPClientWithProxy(resolver ssrfResolver, dialContext fun
 	if getProtection == nil {
 		getProtection = currentFetchProtection
 	}
-	if proxy == nil {
-		proxy = http.ProxyFromEnvironment
-	}
 
-	client := &http.Client{
+	return &http.Client{
 		Transport: &ssrfProtectedRoundTripper{
-			resolver:      resolver,
-			dialContext:   dialContext,
-			getProtection: getProtection,
-			proxy:         proxy,
-			transports:    make(map[string]*http.Transport),
+			resolver:              resolver,
+			dialContext:           dialContext,
+			getProtection:         getProtection,
+			responseHeaderTimeout: mediaResponseHeaderTimeout,
 		},
 		CheckRedirect: checkProtectedFetchRedirect,
 	}
-	if common.RelayTimeout != 0 {
-		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
-	}
-	return client
 }
 
 func (t *ssrfProtectedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil || req.URL == nil {
 		return nil, fmt.Errorf("invalid request")
 	}
-	if err := ValidateSSRFProtectedFetchURL(req.URL.String()); err != nil {
-		return nil, err
-	}
 
-	proxyURL, err := t.proxy(req)
+	target, err := resolveProtectedFetchTarget(req.Context(), req.URL, t.resolver, t.getProtection)
 	if err != nil {
 		return nil, err
 	}
-	return t.transportFor(proxyURL).RoundTrip(req)
-}
 
-func (t *ssrfProtectedRoundTripper) CloseIdleConnections() {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-
-	for _, transport := range t.transports {
-		transport.CloseIdleConnections()
+	requestContext := context.WithValue(req.Context(), protectedFetchTargetContextKey{}, target)
+	request := req.Clone(requestContext)
+	responseHeaderTimeout := t.responseHeaderTimeout
+	if responseHeaderTimeout <= 0 {
+		responseHeaderTimeout = mediaResponseHeaderTimeout
 	}
-}
-
-func (t *ssrfProtectedRoundTripper) transportFor(proxyURL *url.URL) *http.Transport {
-	// 只按代理地址分组：代理来自环境变量，取值有限，map 有界；
-	// 目标 origin 是用户可控输入，不能作为缓存 key。
-	key := "direct"
-	if proxyURL != nil {
-		key = proxyURL.String()
+	tlsConfig := buildUpstreamTLSConfig()
+	if t.tlsConfig != nil {
+		tlsConfig = t.tlsConfig.Clone()
 	}
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-
-	if transport, ok := t.transports[key]; ok {
-		return transport
-	}
-
-	transport := t.newTransport(proxyURL)
-	t.transports[key] = transport
-	return transport
-}
-
-func (t *ssrfProtectedRoundTripper) newTransport(proxyURL *url.URL) *http.Transport {
-	dialContext := t.dialContext
-	proxyFunc := http.ProxyURL(proxyURL)
-	if proxyURL == nil {
-		protectedDialer := &protectedFetchDialer{
-			resolver:      t.resolver,
-			dialContext:   t.dialContext,
-			getProtection: t.getProtection,
-		}
-		dialContext = protectedDialer.DialContext
-		proxyFunc = nil
-	}
-
 	transport := &http.Transport{
-		MaxIdleConns:        common.RelayMaxIdleConns,
-		MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-		IdleConnTimeout:     time.Duration(common.RelayIdleConnTimeout) * time.Second,
-		ForceAttemptHTTP2:   true,
-		Proxy:               proxyFunc,
-		DialContext:         dialContext,
+		MaxIdleConns:          common.RelayMaxIdleConns,
+		MaxIdleConnsPerHost:   common.RelayMaxIdleConnsPerHost,
+		IdleConnTimeout:       time.Duration(common.RelayIdleConnTimeout) * time.Second,
+		ForceAttemptHTTP2:     true,
+		DisableKeepAlives:     true,
+		Proxy:                 nil,
+		DialContext:           (&protectedFetchDialer{dialContext: t.dialContext}).DialContext,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		TLSHandshakeTimeout:   upstreamTLSHandshakeTimeout,
+		ExpectContinueTimeout: upstreamExpectContinueTimeout,
+		TLSClientConfig:       tlsConfig,
 	}
-	if common.TLSInsecureSkipVerify {
-		transport.TLSClientConfig = common.InsecureTLSConfig
+	return transport.RoundTrip(request)
+}
+
+func (t *ssrfProtectedRoundTripper) CloseIdleConnections() {}
+
+func resolveProtectedFetchTarget(ctx context.Context, targetURL *url.URL, resolver ssrfResolver, getProtection func() (*common.SSRFProtection, bool, error)) (*protectedFetchPinnedTarget, error) {
+	if targetURL == nil {
+		return nil, fmt.Errorf("invalid URL")
 	}
-	return transport
+	if targetURL.Scheme != "http" && targetURL.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported protocol: %s (only http/https allowed)", targetURL.Scheme)
+	}
+
+	host := targetURL.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("invalid host")
+	}
+	portText := targetURL.Port()
+	if portText == "" {
+		if targetURL.Scheme == "https" {
+			portText = "443"
+		} else {
+			portText = "80"
+		}
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return nil, fmt.Errorf("invalid port: %s", portText)
+	}
+
+	protection, enabled, err := getProtection()
+	if err != nil {
+		return nil, err
+	}
+	if enabled {
+		if protection == nil {
+			return nil, fmt.Errorf("SSRF protection is enabled without a policy")
+		}
+		if err := protection.ValidateNetworkTarget(host, port); err != nil {
+			return nil, err
+		}
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		return &protectedFetchPinnedTarget{host: host, port: portText, ips: []net.IP{ip}}, nil
+	}
+
+	resolved, err := resolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, err)
+	}
+
+	candidateIPs := make([]net.IP, 0, len(resolved))
+	for _, ipAddr := range resolved {
+		ip := ipAddr.IP
+		if ip == nil || ip.To16() == nil {
+			continue
+		}
+		// Private, loopback, link-local, reserved, and configured IP ranges are
+		// checked for every hostname. Skipping this check would allow a DNS name
+		// to bypass the literal-IP policy and rebind into the local network.
+		if enabled {
+			if err := protection.ValidateResolvedIP(host, ip); err != nil {
+				return nil, err
+			}
+		}
+		candidateIPs = append(candidateIPs, append(net.IP(nil), ip...))
+	}
+	if len(candidateIPs) == 0 {
+		return nil, fmt.Errorf("DNS resolution for %s returned no usable IP addresses", host)
+	}
+
+	return &protectedFetchPinnedTarget{host: host, port: portText, ips: candidateIPs}, nil
 }
 
 func (d *protectedFetchDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	protection, enabled, err := d.getProtection()
-	if err != nil {
-		return nil, err
-	}
-	if !enabled {
-		return d.dialContext(ctx, network, addr)
+	if target, ok := ctx.Value(protectedFetchTargetContextKey{}).(*protectedFetchPinnedTarget); ok && target != nil {
+		host, portText, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid dial address %s: %w", addr, err)
+		}
+		if normalizeProtectedFetchHost(host) != normalizeProtectedFetchHost(target.host) || portText != target.port {
+			return nil, fmt.Errorf("protected fetch target changed from %s to %s", net.JoinHostPort(target.host, target.port), addr)
+		}
+		return dialProtectedFetchIPs(ctx, d.dialContext, network, portText, target.ips)
 	}
 
+	if d.resolver == nil || d.getProtection == nil {
+		return nil, fmt.Errorf("protected fetch dial missing pinned target")
+	}
 	host, portText, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid dial address %s: %w", addr, err)
 	}
-	port, err := strconv.Atoi(portText)
+	targetURL := &url.URL{Scheme: "http", Host: net.JoinHostPort(host, portText)}
+	target, err := resolveProtectedFetchTarget(ctx, targetURL, d.resolver, d.getProtection)
 	if err != nil {
-		return nil, fmt.Errorf("invalid port: %s", portText)
-	}
-	if err := protection.ValidateNetworkTarget(host, port); err != nil {
 		return nil, err
 	}
+	return dialProtectedFetchIPs(ctx, d.dialContext, network, portText, target.ips)
+}
 
-	if ip := net.ParseIP(host); ip != nil {
-		return d.dialContext(ctx, network, net.JoinHostPort(ip.String(), portText))
-	}
-	if !protection.ApplyIPFilterForDomain {
-		return d.dialContext(ctx, network, addr)
-	}
-
-	resolved, err := d.resolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, fmt.Errorf("DNS resolution failed for %s: %v", host, err)
-	}
-
-	var candidateIPs []net.IP
-	for _, ipAddr := range resolved {
-		ip := ipAddr.IP
-		if ip == nil || !networkAllowsIP(network, ip) {
+func dialProtectedFetchIPs(ctx context.Context, dialContext func(context.Context, string, string) (net.Conn, error), network, portText string, ips []net.IP) (net.Conn, error) {
+	var lastDialErr error
+	for _, ip := range ips {
+		if !networkAllowsIP(network, ip) {
 			continue
 		}
-		if err := protection.ValidateResolvedIP(host, ip); err != nil {
-			return nil, err
-		}
-		candidateIPs = append(candidateIPs, ip)
-	}
-
-	var lastDialErr error
-	for _, ip := range candidateIPs {
-		conn, err := d.dialContext(ctx, network, net.JoinHostPort(ip.String(), portText))
+		conn, err := dialContext(ctx, network, net.JoinHostPort(ip.String(), portText))
 		if err == nil {
 			return conn, nil
 		}
 		lastDialErr = err
 	}
-
 	if lastDialErr != nil {
 		return nil, lastDialErr
 	}
-	return nil, fmt.Errorf("DNS resolution for %s returned no usable IP addresses", host)
+	return nil, fmt.Errorf("no usable IP addresses for network %s", network)
+}
+
+func normalizeProtectedFetchHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
 func networkAllowsIP(network string, ip net.IP) bool {

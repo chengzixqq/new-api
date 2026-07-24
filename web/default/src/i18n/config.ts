@@ -16,36 +16,69 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import i18n from 'i18next'
+import i18n, { type BackendModule } from 'i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { initReactI18next } from 'react-i18next'
 
-import { convertDetectedLanguage } from './languages'
-import en from './locales/en.json'
-import fr from './locales/fr.json'
-import ja from './locales/ja.json'
-import ru from './locales/ru.json'
-import vi from './locales/vi.json'
-import zhCN from './locales/zh.json'
-import zhTW from './locales/zh-TW.json'
+import {
+  convertDetectedLanguage,
+  type InterfaceLanguageCode,
+} from './languages'
 
-export const resources = {
-  en,
-  zhCN,
-  fr,
-  ru,
-  ja,
-  vi,
-  zhTW
-} as const
+type LocaleResource = Record<string, string>
 
-i18n
+const localeLoaders: Record<
+  InterfaceLanguageCode,
+  () => Promise<LocaleResource>
+> = {
+  en: async () => (await import('./locales/en.json')).default.translation,
+  zhCN: async () => (await import('./locales/zh.json')).default.translation,
+  fr: async () => (await import('./locales/fr.json')).default.translation,
+  ru: async () => (await import('./locales/ru.json')).default.translation,
+  ja: async () => (await import('./locales/ja.json')).default.translation,
+  vi: async () => (await import('./locales/vi.json')).default.translation,
+  zhTW: async () => (await import('./locales/zh-TW.json')).default.translation,
+}
+
+const localeBackend: BackendModule = {
+  type: 'backend',
+  init: () => undefined,
+  async read(language, namespace, callback) {
+    if (namespace !== 'translation') {
+      callback(null, {})
+      return
+    }
+
+    const loader = localeLoaders[language as InterfaceLanguageCode]
+    if (!loader) {
+      callback(new Error(`Unsupported interface language: ${language}`), false)
+      return
+    }
+
+    let resource: LocaleResource
+    try {
+      resource = await loader()
+    } catch (error: unknown) {
+      callback(
+        error instanceof Error
+          ? error
+          : new Error(`Failed to load interface language: ${language}`),
+        false
+      )
+      return
+    }
+
+    callback(null, resource)
+  },
+}
+
+export const i18nReady = i18n
+  .use(localeBackend)
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
-    resources,
     fallbackLng: 'en',
-    supportedLngs: ['en', 'zhCN', 'fr', 'ru', 'ja', 'vi', 'zhTW'],
+    supportedLngs: Object.keys(localeLoaders),
     load: 'currentOnly',
     nsSeparator: false, // Allow literal colons in keys (e.g., URLs, labels)
     debug: import.meta.env.DEV,
@@ -60,5 +93,6 @@ i18n
       convertDetectedLanguage,
     },
   })
+  .then(() => undefined)
 
 export default i18n

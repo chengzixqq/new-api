@@ -3,6 +3,7 @@ package oaichat
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
@@ -44,6 +45,29 @@ func TestChatCompletionsRequestToResponsesRequestRejectsMultipleChoices(t *testi
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "n>1")
+}
+
+func TestChatCompletionsRequestToResponsesRequestPreservesReasoningEffortWithoutSummary(t *testing.T) {
+	got, err := ChatCompletionsRequestToResponsesRequest(&dto.GeneralOpenAIRequest{
+		Model:                "grok-4.5",
+		ReasoningEffort:      "xhigh",
+		PromptCacheKey:       "stable-session",
+		PromptCacheRetention: common.StringToByteSlice(`"24h"`),
+		Messages: []dto.Message{
+			{Role: "user", Content: "hello"},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got.Reasoning)
+	assert.Equal(t, "xhigh", got.Reasoning.Effort)
+	assert.Empty(t, got.Reasoning.Summary)
+
+	payload, err := common.Marshal(got)
+	require.NoError(t, err)
+	assert.Equal(t, "xhigh", gjson.GetBytes(payload, "reasoning.effort").String())
+	assert.False(t, gjson.GetBytes(payload, "reasoning.summary").Exists())
+	assert.Equal(t, "stable-session", gjson.GetBytes(payload, "prompt_cache_key").String())
+	assert.Equal(t, "24h", gjson.GetBytes(payload, "prompt_cache_retention").String())
 }
 
 func assistantMessageWithTool(content string, id string, name string, args string) dto.Message {

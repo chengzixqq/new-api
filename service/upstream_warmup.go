@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"math/rand"
@@ -15,7 +16,9 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/bytedance/gopkg/util/gopool"
 )
 
@@ -43,11 +46,12 @@ var (
 )
 
 type warmupTarget struct {
-	key    string
-	url    string
-	host   string
-	proxy  string
-	client *http.Client
+	key      string
+	url      string
+	host     string
+	proxy    string
+	client   *http.Client
+	attempts int
 }
 
 func StartUpstreamWarmupTask() {
@@ -98,10 +102,9 @@ func buildWarmupTargets() []warmupTarget {
 	seen := make(map[string]bool)
 	var targets []warmupTarget
 
+	globalHTTPConfig := model_setting.ResolveUpstreamHTTPConfig(dto.ChannelOtherSettings{})
 	for _, raw := range parseUpstreamWarmupURLs(os.Getenv("UPSTREAM_WARMUP_URLS")) {
-		if target, ok := makeTargetFromURL(raw, "", seen); ok {
-			targets = append(targets, target)
-		}
+		targets = append(targets, makeResolvedWarmupTargets(raw, "", 0, globalHTTPConfig, seen)...)
 	}
 
 	channels, err := model.GetAllChannels(0, 0, true, false)
@@ -126,49 +129,121 @@ func buildWarmupTargets() []warmupTarget {
 		}
 
 		warmURL := joinWarmupPath(base, warmupPath())
-		if target, ok := makeTargetFromURL(warmURL, channel.GetSetting().Proxy, seen); ok {
-			targets = append(targets, target)
-		}
+		targets = append(targets, makeChannelWarmupTargets(channel, warmURL, seen)...)
 	}
 	return targets
 }
 
-func makeTargetFromURL(rawURL, proxy string, seen map[string]bool) (warmupTarget, bool) {
+func makeChannelWarmupTargets(channel *model.Channel, rawURL string, seen map[string]bool) []warmupTarget {
+	if channel == nil {
+		return nil
+	}
+	proxyURL := channel.GetSetting().Proxy
+	resolved := model_setting.ResolveUpstreamHTTPConfig(channel.GetOtherSettings())
+	return makeResolvedWarmupTargets(rawURL, proxyURL, channel.Id, resolved, seen)
+}
+
+func makeResolvedWarmupTargets(
+	rawURL string,
+	proxyURL string,
+	channelID int,
+	resolved model_setting.ResolvedUpstreamHTTPConfig,
+	seen map[string]bool,
+) []warmupTarget {
+	u, ok := parseWarmupURL(rawURL)
+	if !ok {
+		return nil
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	proxyDigest := sha256.Sum256([]byte(proxyURL))
+	proxyLabel := observableProxyLabel(proxyURL)
+	baseKey := fmt.Sprintf("%s://%s|proxy=%x|channel=%d", u.Scheme, u.Host, proxyDigest, channelID)
+	appendTarget := func(targets []warmupTarget, keySuffix string, client *http.Client, attempts int) []warmupTarget {
+		key := baseKey + keySuffix
+		if client == nil || seen[key] {
+			return targets
+		}
+		seen[key] = true
+		return append(targets, warmupTarget{
+			key:      key,
+			url:      rawURL,
+			host:     u.Host,
+			proxy:    proxyLabel,
+			client:   client,
+			attempts: attempts,
+		})
+	}
+
+	targets := make([]warmupTarget, 0, resolved.HTTP2ConnectionPoolSize+1)
+	if resolved.Mode == dto.UpstreamHTTPModeHTTP1 {
+		client, err := getUpstreamHTTP1Client(proxyURL)
+		if err != nil {
+			common.SysError(fmt.Sprintf("upstream warmup: HTTP/1 client failed for channel %d (proxy=%q): %v", channelID, proxyLabel, err))
+			return nil
+		}
+		return appendTarget(targets, "|http1", client, upstreamWarmupH1Connections())
+	}
+
+	for index := 0; index < resolved.HTTP2ConnectionPoolSize; index++ {
+		client, selection, err := SelectUpstreamHTTPClient(UpstreamHTTPClientOptions{
+			ChannelID:     channelID,
+			ProxyURL:      proxyURL,
+			Mode:          UpstreamHTTPModeAuto,
+			HTTP2PoolSize: resolved.HTTP2ConnectionPoolSize,
+			Method:        http.MethodGet,
+		})
+		if err != nil {
+			common.SysError(fmt.Sprintf("upstream warmup: HTTP/2 pool client failed for channel %d (proxy=%q): %v", channelID, proxyLabel, err))
+			return targets
+		}
+		keySuffix := fmt.Sprintf("|h2-shard=%d", selection.HTTP2Shard)
+		attempts := 1
+		if resolved.HTTP2ConnectionPoolSize == 1 {
+			keySuffix = "|h2-shared"
+			if resolved.Mode == dto.UpstreamHTTPModeAuto {
+				attempts = 0
+			}
+		}
+		targets = appendTarget(targets, keySuffix, client, attempts)
+	}
+	if resolved.Mode == dto.UpstreamHTTPModeHybrid {
+		client, err := getUpstreamHTTP1Client(proxyURL)
+		if err != nil {
+			common.SysError(fmt.Sprintf("upstream warmup: hybrid HTTP/1 client failed for channel %d (proxy=%q): %v", channelID, proxyLabel, err))
+			return targets
+		}
+		targets = appendTarget(targets, "|http1", client, 1)
+	}
+	return targets
+}
+
+func observableProxyLabel(proxyURL string) string {
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "configured"
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + parsed.Host
+}
+
+func parseWarmupURL(rawURL string) (*url.URL, bool) {
 	rawURL = strings.TrimSpace(rawURL)
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return warmupTarget{}, false
+		return nil, false
 	}
 
 	lowerPath := strings.ToLower(u.Path)
 	for _, bad := range warmupForbiddenSubpaths {
 		if strings.Contains(lowerPath, bad) {
 			common.SysError(fmt.Sprintf("upstream warmup: refuse billable path %q", rawURL))
-			return warmupTarget{}, false
+			return nil, false
 		}
 	}
-
-	key := u.Scheme + "://" + u.Host + "|" + proxy
-	if seen[key] {
-		return warmupTarget{}, false
-	}
-	seen[key] = true
-
-	var client *http.Client
-	if proxy == "" {
-		client = GetHttpClient()
-	} else {
-		client, err = NewProxyHttpClient(proxy)
-		if err != nil {
-			common.SysError(fmt.Sprintf("upstream warmup: proxy client failed for %q: %v", proxy, err))
-			return warmupTarget{}, false
-		}
-	}
-	if client == nil {
-		client = http.DefaultClient
-	}
-
-	return warmupTarget{key: key, url: rawURL, host: u.Host, proxy: proxy, client: client}, true
+	return u, true
 }
 
 func warmTargets(targets []warmupTarget, timeout time.Duration) {
@@ -206,6 +281,9 @@ func warmTargets(targets []warmupTarget, timeout time.Duration) {
 }
 
 func warmupAttemptCount(target warmupTarget) int {
+	if target.attempts > 0 {
+		return target.attempts
+	}
 	if protoMajor, ok := cachedWarmupProto(target); ok && protoMajor == 1 {
 		return upstreamWarmupH1Connections()
 	}

@@ -46,10 +46,14 @@ import {
   formatModelName,
   getTieredBillingSummary,
   hasAnyCacheTokens,
-  parseLogOther,
   isViolationFeeLog,
   renderAuditContent,
 } from '../../lib/format'
+import {
+  getLogGroupRatioLabelKey,
+  resolveLogGroupRatio,
+} from '../../lib/group-ratio'
+import type { PreparedUsageLog } from '../../lib/log-data'
 import {
   isDisplayableLogType,
   isTimingLogType,
@@ -76,21 +80,11 @@ function formatRatioCompact(ratio: number | undefined): string {
 }
 
 function getGroupRatio(other: LogOtherData | null): number | null {
-  const userGroupRatio = other?.user_group_ratio
-  if (
-    userGroupRatio != null &&
-    userGroupRatio !== -1 &&
-    Number.isFinite(userGroupRatio)
-  ) {
-    return userGroupRatio
+  const resolved = resolveLogGroupRatio(other)
+  if (!resolved || (resolved.kind === 'group' && resolved.ratio === 1)) {
+    return null
   }
-
-  const groupRatio = other?.group_ratio
-  if (groupRatio != null && groupRatio !== 1 && Number.isFinite(groupRatio)) {
-    return groupRatio
-  }
-
-  return null
+  return resolved.ratio
 }
 
 function splitQuotaDisplay(value: string): { prefix: string; amount: string } {
@@ -259,20 +253,10 @@ function buildTypeDetailSegments(
         }
       }
     } else {
-      const userGroupRatio = other.user_group_ratio
-      const groupRatio = other.group_ratio
-      const isUserGroup =
-        userGroupRatio != null &&
-        Number.isFinite(userGroupRatio) &&
-        userGroupRatio !== -1
-      const effectiveRatio = isUserGroup ? userGroupRatio : groupRatio
-      const ratioLabel = isUserGroup
-        ? t('User Exclusive Ratio')
-        : t('Group Ratio')
-
-      if (effectiveRatio != null && Number.isFinite(effectiveRatio)) {
+      const effectiveRatio = resolveLogGroupRatio(other)
+      if (effectiveRatio) {
         segments.push({
-          text: `${ratioLabel} ${formatRatioCompact(effectiveRatio)}x`,
+          text: `${t(getLogGroupRatioLabelKey(effectiveRatio.kind))} ${formatRatioCompact(effectiveRatio.ratio)}x`,
         })
       }
     }
@@ -288,9 +272,11 @@ function buildTypeDetailSegments(
   return segments
 }
 
-export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
+export function useCommonLogsColumns(
+  isAdmin: boolean
+): ColumnDef<PreparedUsageLog>[] {
   const { t } = useTranslation()
-  const columns: ColumnDef<UsageLog>[] = [
+  const columns: ColumnDef<PreparedUsageLog>[] = [
     {
       accessorKey: 'created_at',
       header: t('Time'),
@@ -337,7 +323,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
 
           if (!isDisplayableLogType(log.type)) return null
 
-          const other = parseLogOther(log.other)
+          const other = log.parsedOther
           const affinity = other?.admin_info?.channel_affinity
           const rawUseChannel = other?.admin_info?.use_channel ?? []
           const useChannel = Array.isArray(rawUseChannel)
@@ -551,7 +537,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       const tokenName = log.token_name
       if (!tokenName) return null
 
-      const other = parseLogOther(log.other)
+      const other = log.parsedOther
       const displayName = sensitiveVisible ? tokenName : '••••'
       let group = log.group
       if (!group) group = other?.group || ''
@@ -610,7 +596,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         const log = row.original
         if (!isDisplayableLogType(log.type)) return null
 
-        const modelInfo = formatModelName(log)
+        const modelInfo = formatModelName(log, log.parsedOther)
 
         return (
           <div className='flex w-fit flex-col gap-0.5'>
@@ -631,7 +617,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         if (!isTimingLogType(log.type)) return null
 
         const useTime = row.getValue('use_time') as number
-        const other = parseLogOther(log.other)
+        const other = log.parsedOther
         const tokensPerSecond =
           useTime > 0 && log.completion_tokens > 0
             ? log.completion_tokens / useTime
@@ -654,7 +640,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         const log = row.original
         if (!isDisplayableLogType(log.type)) return null
 
-        const other = parseLogOther(log.other)
+        const other = log.parsedOther
 
         const promptTokens = log.prompt_tokens || 0
         const completionTokens = log.completion_tokens || 0
@@ -702,7 +688,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         if (!isDisplayableLogType(log.type)) return null
 
         const quota = row.getValue('quota') as number
-        const other = parseLogOther(log.other)
+        const other = log.parsedOther
         const isSubscription = other?.billing_source === 'subscription'
 
         if (isSubscription) {
@@ -754,7 +740,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         if (!isTimingLogType(log.type)) return null
 
         const useTime = row.getValue('use_time') as number
-        const other = parseLogOther(log.other)
+        const other = log.parsedOther
 
         return (
           <TimingMetricsCell
@@ -773,7 +759,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       cell: function DetailsCell({ row }) {
         const [dialogOpen, setDialogOpen] = useState(false)
         const log = row.original
-        const other = parseLogOther(log.other)
+        const other = log.parsedOther
 
         const segments = buildDetailSegments(log, other, t, isAdmin)
         const primary = segments[0]
@@ -819,12 +805,14 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
             >
               {detailPreview}
             </button>
-            <DetailsDialog
-              log={log}
-              isAdmin={isAdmin}
-              open={dialogOpen}
-              onOpenChange={setDialogOpen}
-            />
+            {dialogOpen ? (
+              <DetailsDialog
+                log={log}
+                isAdmin={isAdmin}
+                open
+                onOpenChange={setDialogOpen}
+              />
+            ) : null}
           </>
         )
       },

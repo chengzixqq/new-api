@@ -32,9 +32,15 @@
 | 当前候选分支 | `codex/sync-custom-84a79b68` |
 | 合并前检查点 | `23008615562c86664f94c2ee7904b3a4f34e6ec5` |
 | 本轮代码合并点 | `e2a898cf0cacd34042f636f260b6b348557e9966` |
+| 本轮最终代码点 | `a21d1d45875a7d13f4fef0680f54922e163c2325` |
 | 本轮官方锁定基线 | `84a79b6807ac1a679ca86f34c8c6f39175c294d8` |
 | 合并前本地源码备份 | `D:\project\newapi-backups\sync-84a79b68-20260724T194105\workspace-source-v2.tgz`；2388 个文件；SHA-256 `42C6D5650E87EA21B99CC9F661CE1698D375BBCE5D8248C0865AAC8A4CD9A328` |
 | 候选镜像构建 | `.github/workflows/candidate-image.yml` 使用仓库原始 `Dockerfile` 构建 `linux/amd64` OCI 归档；成功回执写入 `refs/notes/candidate-image` |
+| 2026-07-24 生产镜像 | `new-api:sync-84a79b68-a21d1d45-20260724T140511Z`；镜像 ID `sha256:02e837f22f3bfe8bfe34ce5e7a6b26bd122735eb677801d3016dab64ed331413`；容器 `new-api-hardening`；标准端口 `127.0.0.1:3003` |
+| 2026-07-24 部署前数据备份 | 服务器 `/data/new-api/backups/deploy-20260724T140247Z-pre-sync-84a79b68-no-logs.tar`；本机 `D:\project\newapi\output\deploy\backups\deploy-20260724T140247Z-pre-sync-84a79b68-no-logs.tar`；SHA-256 `3eb5b24d12520d6ca1c2b493612048d09d92ef6ac78597368d77203f8dfc0bae`；排除文件日志和 `public.logs` 数据但保留表结构 |
+| 2026-07-24 回滚镜像 | `new-api:rollback-pre-sync-84a79b68-20260724T140247Z`；镜像 ID `sha256:d35603b22786b8e776d21ad2981201ce7823febbb1f7375f3d213a94d8521f50` |
+| 2026-07-24 Caddy 回滚点 | `/etc/caddy/Caddyfile.pre-static-fallback-20260724T143534Z`；缺失的 `/static/*` 当前回源 `127.0.0.1:3003`，不再由 Caddy 直接返回 404 |
+| 2026-07-24 Compose 回滚点 | `/data/new-api/docker-compose.registration-hardening.yml.pre-final-a21d-20260724T143945Z` |
 | 2026-07-14 生产镜像历史快照 | `new-api:upstream-a6ea9503-20260714T215817Z`；镜像 ID `sha256:f0cf6f5a4227a1d7a66375f583f9bdf919c62c91ad79c9527d50d811c7915a6a` |
 | 2026-07-14 回滚镜像历史快照 | `new-api:rollback-pre-health-linear-axis-20260714T213311Z`；上一生产标签 `new-api:upstream-a6ea9503-20260714T160241Z`；当时均指向 `sha256:fc6ba5572a911e74a3f2364444282f47905d9e5f8944d963d19f14913bc4a2b6` |
 | 2026-07-14 完整备份历史快照 | 服务器 `/data/new-api/backups/deploy-20260714T213311Z-pre-health-linear-axis.tgz`；本机 `D:\project\newapi\output\deploy\backups\deploy-20260714T213311Z-pre-health-linear-axis.tgz`；SHA-256 `3c8dc3dd490f9f94de165511f0810bd2b607abad334a38dbb772cea34db562f1` |
@@ -63,8 +69,8 @@ Compose、健康状态、数据库、Redis 和备份，不得把上表当成实�
 | 模型请求滑动窗口限流和管理员独立档 | 已实现 | `middleware/model-rate-limit.go` |
 | 中文、繁中及单面板显示补全 | 已实现 | `web/src/i18n` |
 | Grok Chat Completions 经 Responses 上游转发 | 已实现、本地待部署并按渠道启用 | `relay/chat_completions_via_responses.go`、`service/relayconvert/internal/oai_chat/to_oai_responses_req.go` |
-| Responses 推理独占空回复保护 | 已实现、候选分支待灰度 | `relay/channel/openai/relay_responses.go`、`relay/responses_handler.go` |
-| 渠道级重试次数覆盖 | 已实现、候选分支待灰度 | `dto/channel_settings.go`、`controller/relay.go` |
+| Responses 推理独占空回复保护 | 已实现、生产运行；渠道 65/95 已启用 | `relay/channel/openai/relay_responses.go`、`relay/responses_handler.go` |
+| 渠道级重试次数覆盖 | 已实现、生产运行；渠道 65/95 当前继承系统普通错误重试 | `dto/channel_settings.go`、`controller/relay.go` |
 | 服务器端自动推断缓存亲和键 | **仅有设计文档，尚未实现** | `CACHE_AFFINITY_SERVER_SIDE_FALLBACK.md` |
 
 ### 3.1 Grok Chat Completions 转 Responses
@@ -95,9 +101,29 @@ Grok 渠道使用该策略时保留 `reasoning_effort -> reasoning.effort`，但
 上游 usage 有可用 input/output token 时按可信 usage 结算；没有可用 input/output token
 （包括只有 `total_tokens`）时使用预扣费作为计费下限。首次结算失败但能够成功锁定预扣费时，
 仍按锁定额度正式消费；只有最终无法确认结算时才将本次统计 quota 记为 0、跳过消费统计并在
-管理员日志记录未确认状态。未来生产灰度仅计划将渠道 65、95 的
-`responses_empty_output_guard` 设为 `true`，两者 `max_retries` 保持 `null` 继承普通错误重试；
-本轮没有修改生产配置、镜像或容器。
+管理员日志记录未确认状态。2026-07-24 已将生产渠道 65、95 的
+`responses_empty_output_guard` 设为 `true`，两者 `max_retries` 保持 `null` 继承普通错误重试。
+变更前两行配置备份位于服务器
+`/data/new-api/backups/channel-65-95-settings-pre-empty-guard-20260724T144823Z.jsonl`，
+SHA-256 为 `0d219b10185ff2bf63dd446bef0781c62b3e3964c4105251dd87fd4254cae2a4`。
+
+### 3.3 2026-07-24 静态资源事故与部署门禁
+
+首次切换候选镜像时，应用返回的新 HTML 引用了 5 个新哈希的 `/static/*` 入口资源，
+但 Caddy 仍固定从旧版 `/var/www/chegnzi-static-root` 读取静态文件，并对缺失文件直接
+返回 404。生产访问日志确认这 5 个入口在候选运行窗口共出现 95 次 404，导致桌面白屏。
+仍持有旧前端缓存的移动端能够显示登录页，但旧前端忽略新版 `AuthBundle`，登录 200 后
+继续无 Bearer 请求 `/api/user/self` 并收到 401，因此出现“欢迎回来”后仍未登录。
+
+当前生产 Caddy 继续优先提供外部目录中已存在的哈希资源，但缺失的 `/static/*` 会回源
+当前应用容器。以后部署必须保留此回源；若重新做静态卸载，则必须使用版本化目录原子
+切换并同时保留当前版与上一版哈希。每次切流前都要解析候选 HTML 的全部 `/static/*`
+URL，逐个验证目标上游为 200；切流后再从公网逐个验证，任一失败立即回滚。
+
+本轮最终采用 `3005` 临时候选到标准 `3003` 的蓝绿切换，两个切换窗口和后台重建窗口的
+连续公网健康探测均未出现非 200。生产同时设置
+`SESSION_COOKIE_SECURE=true` 与 apex/www 两个精确 HTTPS Origin；真实临时普通用户已完成
+移动端登录、dashboard 跳转和刷新保持验证，随后用户及全部会话已删除并确认残留为 0。
 
 ## 4. 计费安全与缓存写入结算
 
